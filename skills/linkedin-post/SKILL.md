@@ -88,6 +88,7 @@ Write the post as plain prose in this exact flow:
 - Length should fit content: technical/architectural/systems topics can be longer; opinion/observation/narrative should stay tighter.
 - Longer posts must still be skimmable.
 - Never be long without a reason.
+- Do not end paragraphs with periods.
 
 ### Closing Line Rules
 - Do not force a question.
