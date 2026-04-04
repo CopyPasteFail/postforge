@@ -75,44 +75,13 @@ If installed as a Claude Code plugin, the skill is also available via the `/link
 
 ## Install: Codex
 
-**macOS / Linux — copy-paste the whole block:**
-
-```bash
-git clone https://github.com/CopyPasteFail/postforge.git ~/.codex/postforge
-cd ~/.codex/postforge
-npm install
-npx playwright install chromium
-npm run build
-
-mkdir -p ~/.agents/skills
-ln -s ~/.codex/postforge/skills ~/.agents/skills/postforge
-
-codex mcp add linkedin-post-agent -- node ~/.codex/postforge/dist/server.js
-```
-
-**Windows (PowerShell):**
-
-```powershell
-git clone https://github.com/CopyPasteFail/postforge.git "$env:USERPROFILE\.codex\postforge"
-Set-Location "$env:USERPROFILE\.codex\postforge"
-npm install
-npx playwright install chromium
-npm run build
-
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.agents\skills"
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.agents\skills\postforge" `
-  -Target "$env:USERPROFILE\.codex\postforge\skills"
-
-codex mcp add linkedin-post-agent -- node "$env:USERPROFILE\.codex\postforge\dist\server.js"
-```
-
-**Verify — restart Codex, then paste this:**
+Tell Codex:
 
 ```
-Use the linkedin-post skill from postforge and run doctor.
+Fetch and follow instructions from https://raw.githubusercontent.com/CopyPasteFail/postforge/main/.codex/INSTALL.md
 ```
 
-Codex reads `agents/openai.yaml` for skill metadata and MCP dependency. The skill definition is in `skills/linkedin-post/SKILL.md`. Repo guidance is in `AGENTS.md`.
+**Full guide:** [.codex/INSTALL.md](.codex/INSTALL.md) — covers install, verify, update, uninstall, and troubleshooting.
 
 ---
 
