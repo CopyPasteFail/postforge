@@ -1,0 +1,19 @@
+name: linkedin-post
+description: >
+  Full LinkedIn post creation and publishing pipeline. Discovers topics,
+  writes posts in a specific voice, generates images across multiple AI tools,
+  and prepares LinkedIn drafts via browser automation.
+
+skills:
+  - path: skills/linkedin-post/SKILL.md
+
+mcp:
+  - name: linkedin-post-agent
+    command: node
+    args:
+      - dist/server.js
+    description: >
+      Browser automation backend for image generation and LinkedIn draft
+      preparation. Exposes tools: start_run, submit_approved_copy,
+      generate_image_candidates, select_image_candidate, prepare_linkedin_draft,
+      ensure_auth, get_run, cancel_run, doctor.
