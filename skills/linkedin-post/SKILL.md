@@ -1,3 +1,8 @@
+---
+name: linkedin-post
+description: "Use when the user wants to write, create, draft, or publish a LinkedIn post, turn an article or idea into a LinkedIn post, generate images, or run the full post pipeline."
+---
+
 # LinkedIn Post Pipeline
 
 Complete end-to-end workflow: discover topic -> write post -> confirm text -> generate images -> user picks best -> prepare LinkedIn draft.

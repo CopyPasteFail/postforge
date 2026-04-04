@@ -1,28 +1,38 @@
-# linkedin-post-agent
+# postforge
 
 MCP server + skill for LinkedIn post pipeline automation. One repo, two parts:
 
-1. **MCP server** -- browser automation backend for image generation and LinkedIn draft preparation
-2. **Skill** -- workflow instructions that any coding agent follows to write posts, generate images, and prepare drafts
+1. **MCP server** — browser automation backend for image generation and LinkedIn draft preparation
+2. **Skill** — workflow instructions that any coding agent follows to write posts, generate images, and prepare drafts
 
-The host agent (Claude, Codex, Gemini CLI) owns all reasoning. This server owns all execution. The server never calls an LLM and never clicks Post.
+The host agent (Claude Code, Codex, Gemini CLI) owns all reasoning. This server owns all execution. The server never calls an LLM and never clicks Post.
 
-## Prerequisites
+---
+
+## Quick Start
+
+### Prerequisites
 
 - Node.js >= 20
 - Chrome or Chromium installed
-- Playwright browsers: `npx playwright install chromium`
 
-## Setup
+### 1. Clone and build
 
 ```bash
 git clone https://github.com/CopyPasteFail/postforge.git
 cd postforge
 npm install
+npx playwright install chromium
 npm run build
 ```
 
-Copy `.env.example` to `.env` and configure:
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` — defaults work for most setups:
 
 ```
 PIPELINE_DATA_DIR=~/.linkedin-pipeline
@@ -30,62 +40,111 @@ PLAYWRIGHT_HEADLESS=false
 PLAYWRIGHT_CHANNEL=chrome
 ```
 
-Verify everything works:
+### 3. Wire up your agent
 
-```bash
-node dist/server.js doctor
-```
+Pick your agent below, then complete the first-run checklist.
 
 ---
 
-## Using with Codex
+## Install: Claude Code
 
-### 1. Configure the MCP server
+**Step 1 — Register the MCP server**
 
-Add to your Codex MCP config (`~/.codex/config.toml` or project-level `.codex/config.toml`):
-
-```toml
-[mcp_servers.linkedin-post-agent]
-command = "node"
-args = ["/absolute/path/to/linkedin-post-agent/dist/server.js"]
-```
-
-Or use the CLI:
-
-```bash
-codex mcp add linkedin-post-agent -- node /absolute/path/to/dist/server.js
-```
-
-### 2. Use the skill
-
-The skill definition lives in `skills/linkedin-post/SKILL.md`. Codex metadata and MCP dependency are declared in `agents/openai.yaml`.
-
-Point Codex at this repo and the skill will be available for the post pipeline workflow.
-
----
-
-## Using with Claude Code
-
-### 1. Configure the MCP server
-
-Add to your Claude Code MCP settings (`.claude/settings.json` or global settings):
+Add to your Claude Code MCP settings (project `.claude/settings.json` or global `~/.claude/settings.json`):
 
 ```json
 {
   "mcpServers": {
     "linkedin-post-agent": {
       "command": "node",
-      "args": ["/absolute/path/to/linkedin-post-agent/dist/server.js"]
+      "args": ["/absolute/path/to/postforge/dist/server.js"]
     }
   }
 }
 ```
 
-### 2. Use the skill
+**Step 2 — Restart Claude Code**
 
-The skill workflow is in `skills/linkedin-post/SKILL.md`. Claude-specific guidance is in `CLAUDE.md`.
+The skill (`skills/linkedin-post/SKILL.md`) and Claude-specific guidance (`CLAUDE.md`) are picked up automatically when Claude Code opens this repo.
 
-If installed as a Claude Code plugin, the skill is available via the `/linkedin-post` command.
+If installed as a Claude Code plugin, the skill is also available via the `/linkedin-post` command.
+
+**Step 3 — First-run checks** (see checklist below)
+
+---
+
+## Install: Codex
+
+**Step 1 — Register the MCP server**
+
+Add to your Codex MCP config (`~/.codex/config.toml` or project `.codex/config.toml`):
+
+```toml
+[mcp_servers.linkedin-post-agent]
+command = "node"
+args = ["/absolute/path/to/postforge/dist/server.js"]
+```
+
+Or use the CLI:
+
+```bash
+codex mcp add linkedin-post-agent -- node /absolute/path/to/postforge/dist/server.js
+```
+
+**Step 2 — Point Codex at this repo**
+
+Codex reads `agents/openai.yaml` for skill metadata and MCP dependency. The skill definition is in `skills/linkedin-post/SKILL.md`. Repo guidance is in `AGENTS.md`.
+
+**Step 3 — First-run checks** (see checklist below)
+
+---
+
+## First-Run Checklist
+
+After wiring up your agent, verify these before your first post:
+
+| Step | What to ask your agent | What it does |
+|------|------------------------|-------------|
+| 1 | "Run doctor" | Checks Node version, Playwright, Chrome, data dir, tool configs |
+| 2 | "Run ensure_auth for linkedin" | Opens LinkedIn in a browser — log in manually, session is saved |
+| 3 | "Run ensure_auth for chatgpt" | Same for ChatGPT (repeat for each enabled image tool) |
+
+Repeat step 3 for every image tool you enabled in `.env` (gemini, ai-studio, flow, grok, copilot). Auth sessions persist in browser profiles — you only do this once per tool.
+
+If `doctor` reports problems, fix them before continuing.
+
+---
+
+## How the Repo is Wired
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Shared (both agents)                  │
+│                                                         │
+│  skills/linkedin-post/SKILL.md   <- workflow brain      │
+│  src/ -> dist/server.js          <- MCP server          │
+│  prompts/                        <- writer & scout      │
+└─────────────────────────────────────────────────────────┘
+
+┌──────────────────────┐    ┌──────────────────────┐
+│     Claude Code      │    │        Codex         │
+│                      │    │                      │
+│  reads: CLAUDE.md    │    │  reads: AGENTS.md    │
+│  skill auto-loaded   │    │  reads: openai.yaml  │
+│  from skills/ dir    │    │  skill from skills/  │
+│                      │    │  MCP from yaml decl  │
+│  MCP: settings.json  │    │  MCP: config.toml    │
+└──────────────────────┘    └──────────────────────┘
+```
+
+| Layer | File(s) | Who reads it |
+|-------|---------|-------------|
+| **Shared workflow** | `skills/linkedin-post/SKILL.md` | Both agents |
+| **Shared backend** | `src/` -> `dist/server.js` | Both agents (via MCP) |
+| **Shared prompts** | `prompts/*.md` | MCP server (served as resources) |
+| **Claude guidance** | `CLAUDE.md` | Claude Code only |
+| **Codex guidance** | `AGENTS.md` | Codex only |
+| **Codex metadata** | `agents/openai.yaml` | Codex only |
 
 ---
 
@@ -112,7 +171,7 @@ If installed as a Claude Code plugin, the skill is available via the `/linkedin-
 | `linkedin://config/tools` | Current tool configuration |
 | `linkedin://runs/latest` | Most recent active run |
 
-## Pipeline stages
+## Pipeline Stages
 
 ```
 created -> awaiting_content_approval (link accessible or non-link)
@@ -124,19 +183,6 @@ ready_for_linkedin -> ready_to_post (prepare_linkedin_draft)
 ```
 
 Terminal stages: `ready_to_post`, `failed`, `archived`
-
-## How the repo is organized
-
-This repo has one shared backend, one shared skill, and thin per-agent wrappers:
-
-| Layer | File(s) | Purpose |
-|-------|---------|---------|
-| **Shared backend** | `src/`, `dist/` | MCP server -- browser automation, auth, image capture |
-| **Shared workflow** | `skills/linkedin-post/SKILL.md` | The skill brain -- all 4 phases, MCP tool calls, stop conditions |
-| **Shared prompts** | `prompts/` | Writer and news scout prompts (served as MCP resources) |
-| **Codex integration** | `agents/openai.yaml` | Skill metadata + MCP dependency declaration |
-| **Claude integration** | `CLAUDE.md` | Claude-specific tool preferences and MCP config |
-| **Project guidance** | `AGENTS.md` | Setup, conventions, authoritative files for any coding agent |
 
 ## License
 

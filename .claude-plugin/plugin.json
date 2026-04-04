@@ -1,0 +1,14 @@
+{
+  "name": "postforge",
+  "version": "1.0.0",
+  "description": "LinkedIn post pipeline — discover topics, write posts, generate images, prepare drafts",
+  "skills": [
+    "skills/linkedin-post/SKILL.md"
+  ],
+  "mcpServers": {
+    "linkedin-post-agent": {
+      "command": "node",
+      "args": ["dist/server.js"]
+    }
+  }
+}

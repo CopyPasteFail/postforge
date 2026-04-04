@@ -9,7 +9,11 @@
   },
   "files": [
     "dist/",
-    "prompts/"
+    "prompts/",
+    "skills/",
+    "agents/",
+    "CLAUDE.md",
+    "AGENTS.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
