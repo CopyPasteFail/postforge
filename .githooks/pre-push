@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+if command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node)"
+else
+  echo "No Node.js interpreter found for pre-push hook." >&2
+  exit 1
+fi
+
+exec "$NODE_BIN" "$ROOT/scripts/run-pre-push-checks.mjs"
