@@ -89,3 +89,6 @@ Desktop.ini
 
 # Pipeline runtime data (user-specific, never commit)
 *.linkedin-pipeline/
+
+# Local Claude Code settings (user-specific, never commit)
+.claude/settings.local.json
