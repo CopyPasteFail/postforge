@@ -14,7 +14,7 @@ if (process.argv[2] === "doctor") {
 }
 
 const server = new McpServer({
-  name: "linkedin-pipeline-mcp",
+  name: "linkedin-post-agent",
   version: "1.0.0",
 }, {
   capabilities: {

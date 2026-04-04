@@ -1,4 +1,4 @@
-# linkedin-pipeline-mcp
+# linkedin-post-agent
 
 MCP server for LinkedIn post pipeline browser automation. Exposes tools over stdio that any coding agent (Claude, Codex, Gemini CLI) can call to automate image generation across free AI tools and LinkedIn post preparation via Playwright.
 
@@ -41,7 +41,7 @@ Add to your MCP client configuration:
 ```json
 {
   "mcpServers": {
-    "linkedin-pipeline": {
+    "linkedin-post-agent": {
       "command": "node",
       "args": ["path/to/dist/server.js"]
     }

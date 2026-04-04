@@ -1,11 +1,11 @@
 {
-  "name": "@copypastefail/linkedin-pipeline-mcp",
+  "name": "@copypastefail/linkedin-post-agent",
   "version": "1.0.0",
   "type": "module",
   "private": false,
   "description": "MCP server for LinkedIn post pipeline browser automation",
   "bin": {
-    "linkedin-pipeline-mcp": "dist/server.js"
+    "linkedin-post-agent": "dist/server.js"
   },
   "files": [
     "dist/",

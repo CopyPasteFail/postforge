@@ -1,4 +1,4 @@
-# linkedin-pipeline-mcp
+# linkedin-post-agent
 
 MCP server for LinkedIn post pipeline browser automation.
 
