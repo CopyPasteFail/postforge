@@ -36,8 +36,9 @@ const checkPlaywright = async (): Promise<boolean> => {
 const checkChromeAvailable = async (): Promise<boolean> => {
   try {
     const { chromium } = await import("playwright");
-    const executablePath = chromium.executablePath();
-    return await pathExists(executablePath);
+    const browser = await chromium.launch({ headless: true });
+    await browser.close();
+    return true;
   } catch {
     return false;
   }
@@ -93,7 +94,7 @@ export const runDoctorChecks = async (): Promise<DoctorResult> => {
 
   const chromeAvailable = await checkChromeAvailable();
   if (!chromeAvailable) {
-    issues.push("Chrome/Chromium is not available. Run `npx playwright install chromium` or set PLAYWRIGHT_CHANNEL to an installed browser.");
+    issues.push("Chrome/Chromium is not available or the installed version does not match the Playwright package. Run `npx playwright install chromium` from the postforge directory.");
   }
 
   const dataDirWritable = await checkDataDirWritable(dataDir);
