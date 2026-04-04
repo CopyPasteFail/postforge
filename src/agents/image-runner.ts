@@ -69,17 +69,9 @@ export class ImageRunnerAgent {
       await callbacks?.onToolStart?.(adapter.config.id, adapter.config.name);
 
       try {
-        await adapter.ensureAuthenticated(false);
-        const outputDir = await this.assets.ensureToolDir(run.id, adapter.config.id);
-        const generatedAsset = await adapter.generate(run.id, run.finalImagePrompt.promptText, outputDir, false);
-        const asset = await this.assets.finalizeAsset(run.id, generatedAsset);
-        const metadataPath = await this.assets.writeAssetMetadata(run.id, asset);
-        const enrichedAsset = {
-          ...asset,
-          metadataPath,
-        };
-        fulfilledAssets.push(enrichedAsset);
-        await callbacks?.onToolComplete?.(enrichedAsset);
+        const asset = await this.runSingleTool(adapter, run.id, run.finalImagePrompt.promptText);
+        fulfilledAssets.push(asset);
+        await callbacks?.onToolComplete?.(asset);
       } catch (error) {
         if (error instanceof AuthRequiredError) {
           throw error;
@@ -106,7 +98,7 @@ export class ImageRunnerAgent {
       }
     }
 
-    const mergedAssets = [...fulfilledAssets].reduce<ImageAsset[]>((accumulator, asset) => {
+    const mergedAssets = fulfilledAssets.reduce<ImageAsset[]>((accumulator, asset) => {
       const existingIndex = accumulator.findIndex((item) => item.id === asset.id);
       if (existingIndex >= 0) {
         accumulator[existingIndex] = asset;
@@ -118,5 +110,45 @@ export class ImageRunnerAgent {
 
     const reviewFile = await this.manifestBuilder.build(run.id, mergedAssets);
     return { assets: mergedAssets, reviewFile };
+  }
+
+  /**
+   * Run a single tool with one automatic retry for transient browser crashes.
+   * Auth errors and content-policy blocks are NOT retried.
+   */
+  private async runSingleTool(adapter: ToolAdapter, runId: string, promptText: string): Promise<ImageAsset> {
+    const attempt = async (): Promise<ImageAsset> => {
+      await adapter.ensureAuthenticated(false);
+      const outputDir = await this.assets.ensureToolDir(runId, adapter.config.id);
+      const generatedAsset = await adapter.generate(runId, promptText, outputDir, false);
+      const asset = await this.assets.finalizeAsset(runId, generatedAsset);
+      const metadataPath = await this.assets.writeAssetMetadata(runId, asset);
+      return { ...asset, metadataPath };
+    };
+
+    try {
+      return await attempt();
+    } catch (firstError) {
+      // Never retry auth errors or intentional content blocks.
+      if (firstError instanceof AuthRequiredError || firstError instanceof ToolGenerationBlockedError) {
+        throw firstError;
+      }
+
+      const message = firstError instanceof Error ? firstError.message : String(firstError);
+      const isTransient =
+        message.includes("Target page, context or browser has been closed")
+        || message.includes("Opening in existing browser session")
+        || message.includes("Failed to launch")
+        || message.includes("Browser closed")
+        || message.includes("Connection refused")
+        || message.includes("net::ERR_");
+
+      if (!isTransient) {
+        throw firstError;
+      }
+
+      console.error(`[${adapter.config.name}] Transient browser error, retrying once: ${message.slice(0, 120)}`);
+      return attempt();
+    }
   }
 }

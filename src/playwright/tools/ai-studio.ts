@@ -5,15 +5,11 @@ import type { Download, Locator, Page } from "playwright";
 
 import { imageToolConfigs } from "../../config/tools.js";
 import type { ImageAsset } from "../../pipeline/types.js";
-import { AuthService } from "../auth.js";
-import { BrowserService } from "../browser.js";
 import { delay, waitForAnySelector } from "../waits.js";
 import { GenericImageToolAdapter, ToolGenerationBlockedError } from "./base.js";
 
 class AiStudioToolAdapter extends GenericImageToolAdapter {
   private static readonly imageGenerationUrl = "https://aistudio.google.com/prompts/new_chat";
-  private readonly aiStudioBrowser = new BrowserService();
-  private readonly aiStudioAuth = new AuthService(this.aiStudioBrowser);
 
   protected override async configureMode(page: Page): Promise<void> {
     await this.openImageGeneration(page);
@@ -23,12 +19,12 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
   public async downloadFromPromptUrl(runId: string, promptUrl: string, outputDir: string): Promise<ImageAsset> {
     await fs.mkdir(outputDir, { recursive: true });
 
-    const { context, page } = await this.aiStudioBrowser.launchPage(this.config.id, this.config.profileId);
+    const { context, page } = await this.launchToolPage();
     try {
       console.error(`[${this.config.name}] navigating: Opening saved prompt ${promptUrl}`);
       await page.goto(promptUrl, { waitUntil: "domcontentloaded" });
 
-      const isLoggedIn = await this.aiStudioAuth.isAuthenticated(page, this.config);
+      const isLoggedIn = await this.checkAuthenticated(page);
       if (!isLoggedIn) {
         await context.close();
         await this.ensureAuthenticated(true);

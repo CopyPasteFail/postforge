@@ -5,8 +5,6 @@ import type { Download, Locator, Page } from "playwright";
 
 import { imageToolConfigs } from "../../config/tools.js";
 import type { ImageAsset, ImageAssetVariant } from "../../pipeline/types.js";
-import { AuthService } from "../auth.js";
-import { BrowserService } from "../browser.js";
 import { pathExists, writeJson } from "../../storage/fs-utils.js";
 import { delay, waitForAnySelector } from "../waits.js";
 import { GenericImageToolAdapter, ToolGenerationBlockedError } from "./base.js";
@@ -41,8 +39,6 @@ interface FlowVariantMetadata {
 const sanitizeFilename = (value: string): string => value.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-").replace(/\s+/g, " ").trim();
 
 class FlowToolAdapter extends GenericImageToolAdapter {
-  private readonly flowBrowser = new BrowserService();
-  private readonly flowAuth = new AuthService(this.flowBrowser);
   private latestVariants: ImageAssetVariant[] = [];
   private baselineSources = new Set<string>();
 
@@ -67,10 +63,10 @@ class FlowToolAdapter extends GenericImageToolAdapter {
     this.latestVariants = [];
     this.baselineSources = new Set<string>();
 
-    const { context, page } = await this.flowBrowser.launchPage(this.config.id, this.config.profileId);
+    const { context, page } = await this.launchToolPage();
     try {
       await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
-      const authenticated = await this.flowAuth.isAuthenticated(page, this.config);
+      const authenticated = await this.checkAuthenticated(page);
       if (!authenticated) {
         await context.close();
         await this.ensureAuthenticated(true);
@@ -189,7 +185,8 @@ class FlowToolAdapter extends GenericImageToolAdapter {
         || normalized.includes("please edit your prompt and try again")
         || normalized.includes("i can't generate the image you requested right now")
         || normalized.includes("this generation might violate our policies")
-        || normalized.includes("failed")
+        || normalized.includes("image generation failed")
+        || normalized.includes("generation failed")
         || normalized.includes("try a different prompt or send feedback")
       ) {
         throw new ToolGenerationBlockedError(

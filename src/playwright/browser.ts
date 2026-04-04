@@ -1,3 +1,6 @@
+import { execSync } from "node:child_process";
+import fs from "node:fs";
+
 import { chromium, type BrowserContext, type Page } from "playwright";
 
 import { toolProfilePath } from "../config/paths.js";
@@ -32,7 +35,29 @@ const sameOrigin = (left: string, right: string): boolean => {
 
 export class BrowserService {
   public async launchPersistent(toolId: string, profileId?: string): Promise<BrowserContext> {
-    const context = await chromium.launchPersistentContext(toolProfilePath(profileId ?? toolId), {
+    const profilePath = toolProfilePath(profileId ?? toolId);
+    try {
+      return await this.doLaunch(profilePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Chrome found an existing session using this profile — kill it and retry.
+      if (
+        message.includes("Opening in existing browser session")
+        || message.includes("Target page, context or browser has been closed")
+        || message.includes("Failed to launch")
+      ) {
+        console.error(`[browser] Launch failed for ${profileId ?? toolId}: ${message.slice(0, 120)}`);
+        console.error(`[browser] Killing stale Chrome processes for profile ${profilePath}`);
+        this.killStaleChrome(profilePath);
+        this.clearProfileLocks(profilePath);
+        return this.doLaunch(profilePath);
+      }
+      throw error;
+    }
+  }
+
+  private async doLaunch(profilePath: string): Promise<BrowserContext> {
+    const context = await chromium.launchPersistentContext(profilePath, {
       channel: browserChannel,
       headless,
       acceptDownloads: true,
@@ -55,6 +80,49 @@ export class BrowserService {
     });
 
     return context;
+  }
+
+  /**
+   * Kill Chrome processes whose command line contains the given profile path.
+   * Falls back to no-op if the platform command fails.
+   */
+  private killStaleChrome(profilePath: string): void {
+    const normalized = profilePath.replace(/\//g, "\\");
+    try {
+      if (process.platform === "win32") {
+        // WMIC lists Chrome PIDs whose command line contains the profile path.
+        const output = execSync(
+          `wmic process where "name='chrome.exe' and commandline like '%${normalized.replace(/\\/g, "\\\\")}%'" get processid`,
+          { encoding: "utf8", timeout: 10_000 },
+        ).trim();
+        const pids = output.split(/\r?\n/).slice(1).map((line) => line.trim()).filter(Boolean);
+        for (const pid of pids) {
+          try {
+            execSync(`taskkill /F /PID ${pid}`, { timeout: 5_000 });
+            console.error(`[browser] Killed stale Chrome PID ${pid}`);
+          } catch {
+            // Process may have already exited.
+          }
+        }
+      } else {
+        execSync(
+          `pkill -f "chrome.*${profilePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" || true`,
+          { timeout: 5_000 },
+        );
+      }
+    } catch {
+      console.error("[browser] Could not kill stale Chrome processes (non-fatal)");
+    }
+  }
+
+  private clearProfileLocks(profilePath: string): void {
+    for (const lockFile of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+      try {
+        fs.rmSync(`${profilePath}/${lockFile}`, { force: true });
+      } catch {
+        // Lock file may not exist.
+      }
+    }
   }
 
   public async launchPage(toolId: string, profileId?: string): Promise<{ context: BrowserContext; page: Page }> {

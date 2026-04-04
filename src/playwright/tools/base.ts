@@ -46,12 +46,20 @@ interface ResultCandidate {
 export class GenericImageToolAdapter implements ToolAdapter {
   public constructor(
     public readonly config: ImageToolConfig,
-    private readonly browser = new BrowserService(),
-    private readonly auth = new AuthService(),
+    protected readonly browser = new BrowserService(),
+    protected readonly auth = new AuthService(),
   ) {}
 
   public async ensureAuthenticated(interactive = true): Promise<void> {
     await this.auth.ensureAuthenticated(this.config, interactive);
+  }
+
+  protected async launchToolPage(): Promise<{ context: import("playwright").BrowserContext; page: Page }> {
+    return this.browser.launchPage(this.config.id, this.config.profileId);
+  }
+
+  protected async checkAuthenticated(page: Page): Promise<boolean> {
+    return this.auth.isAuthenticated(page, this.config);
   }
 
   public async testPromptInsertion(promptText: string, keepOpen = true): Promise<void> {
