@@ -7,7 +7,24 @@ import { delay, waitForAnySelector } from "../waits.js";
 import { GenericImageToolAdapter, ToolGenerationBlockedError } from "./base.js";
 
 class GeminiToolAdapter extends GenericImageToolAdapter {
-  protected override async waitForResultElements(page: Page, timeoutMs = 180_000): Promise<void> {
+  protected override async configureMode(page: Page): Promise<void> {
+    // Gemini defaults to chat mode. Click "Create image" to switch to image generation.
+    const createImageSelector = await waitForAnySelector(page, [
+      "button:has-text('Create image')",
+      "a:has-text('Create image')",
+      "[aria-label*='Create image']",
+    ], 4_000);
+
+    if (createImageSelector) {
+      console.error("[Gemini] configureMode: clicking Create image button");
+      await page.locator(createImageSelector).first().click().catch(() => undefined);
+      await delay(2_000);
+    } else {
+      console.error("[Gemini] configureMode: Create image button not found, proceeding without mode switch");
+    }
+  }
+
+  protected override async waitForResultElements(page: Page, timeoutMs = 120_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
@@ -32,7 +49,7 @@ class GeminiToolAdapter extends GenericImageToolAdapter {
 
         const actionSelector = await waitForAnySelector(page, this.downloadButtonSelectors(), 10_000);
         if (actionSelector) {
-          console.log(`[Gemini] result-action-ready: Download control visible via ${actionSelector}`);
+          console.error(`[Gemini] result-action-ready: Download control visible via ${actionSelector}`);
         }
         return;
       }
@@ -40,17 +57,18 @@ class GeminiToolAdapter extends GenericImageToolAdapter {
       await delay(1_500);
     }
 
-    await super.waitForResultElements(page, 5_000);
+    // No Gemini-specific image found within timeout — captureResultElements will return 0 files.
+    console.error("[Gemini] waitForResultElements: no image detected within timeout");
   }
 
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
     const downloaded = await this.downloadFromGemini(page, outputDir);
     if (downloaded) {
-      console.log(`[Gemini] result-saved: Downloaded image artifact ${downloaded}`);
+      console.error(`[Gemini] result-saved: Downloaded image artifact ${downloaded}`);
       return [downloaded];
     }
 
-    console.log("[Gemini] result-download-fallback: Falling back to generic media capture");
+    console.error("[Gemini] result-download-fallback: Falling back to generic media capture");
     return super.captureResultElements(page, outputDir);
   }
 
@@ -69,7 +87,7 @@ class GeminiToolAdapter extends GenericImageToolAdapter {
         continue;
       }
 
-      console.log(`[Gemini] download-found: Using ${selector}`);
+      console.error(`[Gemini] download-found: Using ${selector}`);
       const download = await this.clickAndCaptureDownload(page, button);
       if (!download) {
         continue;
@@ -89,7 +107,7 @@ class GeminiToolAdapter extends GenericImageToolAdapter {
     await button.click().catch(() => undefined);
     const download = await downloadPromise;
     if (download) {
-      console.log(`[Gemini] download-clicked: Browser download started as ${download.suggestedFilename()}`);
+      console.error(`[Gemini] download-clicked: Browser download started as ${download.suggestedFilename()}`);
     }
     return download;
   }

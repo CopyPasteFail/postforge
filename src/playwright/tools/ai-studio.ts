@@ -23,9 +23,9 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
   public async downloadFromPromptUrl(runId: string, promptUrl: string, outputDir: string): Promise<ImageAsset> {
     await fs.mkdir(outputDir, { recursive: true });
 
-    const { context, page } = await this.aiStudioBrowser.launchPage(this.config.id);
+    const { context, page } = await this.aiStudioBrowser.launchPage(this.config.id, this.config.profileId);
     try {
-      console.log(`[${this.config.name}] navigating: Opening saved prompt ${promptUrl}`);
+      console.error(`[${this.config.name}] navigating: Opening saved prompt ${promptUrl}`);
       await page.goto(promptUrl, { waitUntil: "domcontentloaded" });
 
       const isLoggedIn = await this.aiStudioAuth.isAuthenticated(page, this.config);
@@ -58,7 +58,7 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
     const downloaded = await this.downloadGeneratedImage(page, outputDir);
     if (downloaded) {
-      console.log(`[${this.config.name}] result-saved: Downloaded full-size image artifact ${downloaded}`);
+      console.error(`[${this.config.name}] result-saved: Downloaded full-size image artifact ${downloaded}`);
       return [downloaded];
     }
 

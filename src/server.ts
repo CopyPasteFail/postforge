@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerTools } from "./tools/index.js";
 import { registerResources } from "./resources/index.js";
 import { runDoctorChecks } from "./doctor.js";
+import { recoverStuckRuns, purgeExpiredRuns } from "./tools/helpers.js";
 
 if (process.argv[2] === "doctor") {
   const result = await runDoctorChecks();
@@ -25,6 +26,12 @@ const server = new McpServer({
 
 registerTools(server);
 registerResources(server);
+await purgeExpiredRuns();
+await recoverStuckRuns();
+
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[postforge] unhandled rejection: ${reason}\n`);
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

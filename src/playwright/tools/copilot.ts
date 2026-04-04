@@ -52,7 +52,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
       if (generationSignals) {
         sawGenerationSignals = true;
       } else if (explicitReady && sawGenerationSignals) {
-        console.log("[Copilot] result-ready: Copilot reported that the illustration is ready");
+        console.error("[Copilot] result-ready: Copilot reported that the illustration is ready");
         return;
       } else if (sawGenerationSignals && ready.length > 0) {
         const signature = ready
@@ -61,7 +61,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
         stableResolvedChecks = signature === lastResolvedSignature ? stableResolvedChecks + 1 : 1;
         lastResolvedSignature = signature;
         if (stableResolvedChecks >= 2) {
-          console.log(`[Copilot] result-ready: Detected ${ready.length} resolved image candidate(s) after generation finished`);
+          console.error(`[Copilot] result-ready: Detected ${ready.length} resolved image candidate(s) after generation finished`);
           return;
         }
       }
@@ -69,7 +69,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
       await delay(1_500);
     }
 
-    console.log(`[Copilot] result-ready-timeout: Copilot did not produce a resolved image within ${Math.round(timeoutMs / 1_000)}s`);
+    console.error(`[Copilot] result-ready-timeout: Copilot did not produce a resolved image within ${Math.round(timeoutMs / 1_000)}s`);
   }
 
   private async hasGenerationSignals(page: Page, images: CopilotImageCandidate[]): Promise<boolean> {
@@ -110,7 +110,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
     const locator = page.locator("img").nth(target.index);
     const downloaded = await this.downloadResolvedImageCandidate(locator, path.join(outputDir, "copilot-result-1"));
     if (downloaded) {
-      console.log(`[Copilot] result-saved: Downloaded resolved image artifact ${downloaded}`);
+      console.error(`[Copilot] result-saved: Downloaded resolved image artifact ${downloaded}`);
       return [downloaded];
     }
 

@@ -152,6 +152,7 @@ If the user selects a comic style:
 - Lock that style for the entire image stage.
 - All concepts and prompts must strictly use that comic's visual style, characters, settings, and tropes.
 - Do not mix styles or add external characters.
+- Match that comic's typical humor and composition.
 
 ### Image Mode Flow
 
@@ -191,9 +192,12 @@ When the user confirms the prompt, use the MCP tools to hand off to the browser 
    - This is a long-running operation. The MCP server opens Playwright browsers, navigates to each enabled AI tool (ChatGPT, Gemini, AI Studio, Flow, Grok, Copilot), pastes the prompt, waits for generation, and captures the results.
    - The response contains a `candidates` array with numbered entries, each showing `tool_id`, `tool_name`, `status`, and `file_path`.
    - If the response includes `auth_required`, tell the user which tool needs login and call `ensure_auth` with that `tool_id`. After auth, call `generate_image_candidates` again to retry.
+   - If `generate_image_candidates` times out (120s), the run continues in the background. Call `get_run` to check progress. When the user says "continue", "resume", or "keep going", call `generate_image_candidates` again — it automatically skips tools that already produced results and picks up from where it left off.
+   - Only call `finalize_candidates` if the user explicitly says they want to **skip** or **stop** waiting for remaining tools. Never call it to resume.
 
 4. Present the candidates to the user. For each candidate, show: number, tool name, status.
-   - If a `review_page_path` is returned, mention it so the user can open it to compare images visually.
+   - If a `review_page_path` is returned, tell the user to open that file to compare images visually — images cannot be rendered inline in this chat.
+   - If no `review_page_path`, tell the user the file paths so they can open the images directly.
    - Ask: "Which image do you want to use? Pick a number."
 
 **Step 6: Select the image**
@@ -216,10 +220,11 @@ After image selection:
 ## Authentication Handling
 
 If any MCP tool call fails with an auth error or returns `auth_required`:
-1. Tell the user which tool needs login.
-2. Call `ensure_auth` with the `tool_id` (e.g., "chatgpt", "linkedin", "gemini", "ai-studio", "flow", "grok", "copilot").
-3. This opens the tool's website in a Playwright browser. The user logs in manually. The session is saved to a persistent profile.
-4. After auth succeeds, retry the original operation.
+1. Tell the user which tool needs login and ask if they want to log in or skip it.
+2. **To log in**: Call `ensure_auth` with the `tool_id`. This is a **two-step flow** — `ensure_auth` never blocks:
+   - **First call**: Opens the browser at the tool URL and returns immediately. If `authenticated: true`, you are done — proceed to generation. If `awaiting_login: true`, tell the user the browser is open and ask them to log in, then confirm with you.
+   - **Second call** (after user says "done" / "logged in" / "I'm in"): Call `ensure_auth` again with the same `tool_id`. It will check the session and return `authenticated: true` if login succeeded. Once confirmed, call `generate_image_candidates` to resume.
+3. **To skip**: If the user says "skip", "move on", "next tool", or doesn't want to log in — call `skip_tool` with the `run_id`. This marks the blocked tool as skipped and resets the stage. Then call `generate_image_candidates` to continue with the remaining tools.
 
 ---
 

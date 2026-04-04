@@ -17,7 +17,13 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
     schema.shape,
     async (params) => {
       const input = schema.parse(params);
-      const run = await orchestrator.generateImages(input.run_id);
+      let run: Awaited<ReturnType<typeof orchestrator.generateImages>>;
+      try {
+        run = await orchestrator.generateImages(input.run_id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }], isError: true };
+      }
 
       const candidates = run.imageAssets.map((asset, index) => ({
         number: index + 1,

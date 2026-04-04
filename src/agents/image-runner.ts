@@ -8,6 +8,7 @@ import { ReviewManifestBuilder } from "../review/manifest.js";
 import { AssetStore } from "../storage/assets.js";
 import type { ImageAsset, RunRecord } from "../pipeline/types.js";
 import { ToolGenerationBlockedError, type ToolAdapter } from "../playwright/tools/base.js";
+import { AuthRequiredError } from "../playwright/auth.js";
 
 const adapters: ToolAdapter[] = [
   chatgptAdapter,
@@ -50,17 +51,25 @@ export class ImageRunnerAgent {
       throw new Error("Run is missing a final image prompt.");
     }
 
-    await this.assets.resetRunArtifacts(run.id);
-    await this.assets.ensureRunDirs(run.id);
+    const isResume = run.imageAssets.length > 0;
+    if (isResume) {
+      await this.assets.ensureRunDirs(run.id);
+    } else {
+      await this.assets.resetRunArtifacts(run.id);
+      await this.assets.ensureRunDirs(run.id);
+    }
 
-    const pending = adapters.filter((adapter) => toolEnabled(adapter.config.id));
+    const doneToolIds = new Set(run.imageAssets.map((a) => a.toolId));
+    const pending = adapters.filter(
+      (adapter) => toolEnabled(adapter.config.id) && !doneToolIds.has(adapter.config.id),
+    );
 
-    const fulfilledAssets: ImageAsset[] = [];
+    const fulfilledAssets: ImageAsset[] = run.imageAssets.filter((a) => a.status === "generated");
     for (const adapter of pending) {
       await callbacks?.onToolStart?.(adapter.config.id, adapter.config.name);
 
       try {
-        await adapter.ensureAuthenticated(interactive);
+        await adapter.ensureAuthenticated(false);
         const outputDir = await this.assets.ensureToolDir(run.id, adapter.config.id);
         const generatedAsset = await adapter.generate(run.id, run.finalImagePrompt.promptText, outputDir, false);
         const asset = await this.assets.finalizeAsset(run.id, generatedAsset);
@@ -72,6 +81,9 @@ export class ImageRunnerAgent {
         fulfilledAssets.push(enrichedAsset);
         await callbacks?.onToolComplete?.(enrichedAsset);
       } catch (error) {
+        if (error instanceof AuthRequiredError) {
+          throw error;
+        }
         const message = error instanceof Error ? error.message : String(error);
         const notes = error instanceof ToolGenerationBlockedError
           ? message

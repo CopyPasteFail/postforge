@@ -10,7 +10,7 @@ class GrokToolAdapter extends GenericImageToolAdapter {
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
     const downloaded = await this.downloadVisibleResult(page, outputDir);
     if (downloaded) {
-      console.log(`[Grok] result-saved: Downloaded image artifact ${downloaded}`);
+      console.error(`[Grok] result-saved: Downloaded image artifact ${downloaded}`);
       return [downloaded];
     }
 

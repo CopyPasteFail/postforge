@@ -123,6 +123,32 @@ export class OrchestratorAgent {
     }
   }
 
+  public async clearToolAsset(runId: string, toolId: string): Promise<RunRecord> {
+    return this.state.update(runId, (draft) => {
+      const index = draft.imageAssets.findIndex((a) => a.toolId === toolId);
+      if (index < 0) throw new Error(`No asset found for tool: ${toolId}`);
+      draft.imageAssets.splice(index, 1);
+      draft.events.push(this.state.event(draft.stage, `${toolId} result cleared for retry.`));
+    });
+  }
+
+  public async finalizeCandidates(runId: string): Promise<RunRecord> {
+    const run = await this.state.load(runId);
+    if (run.stage !== "generating_images" && run.stage !== "awaiting_auth") {
+      throw new Error(`Cannot finalize candidates from stage: ${run.stage}`);
+    }
+    if (run.imageAssets.length === 0) {
+      throw new Error("No image candidates have been generated yet.");
+    }
+    return this.state.update(runId, (draft) => {
+      draft.pendingAuth = undefined;
+      draft.activeToolId = undefined;
+      draft.activeToolName = undefined;
+      draft.stage = "awaiting_image_selection";
+      draft.events.push(this.state.event("awaiting_image_selection", "Image generation finalized early by user request."));
+    });
+  }
+
   public async resumeAfterAuth(runId: string): Promise<RunRecord> {
     const run = await this.state.load(runId);
     if (!run.pendingAuth) {
@@ -142,9 +168,27 @@ export class OrchestratorAgent {
       throw new Error("Run has no pending auth checkpoint.");
     }
 
+    const skippedAsset = {
+      id: `${runId}:${run.pendingAuth.toolId}`,
+      toolId: run.pendingAuth.toolId,
+      toolName: run.pendingAuth.toolName,
+      status: "warning" as const,
+      files: [],
+      notes: `${run.pendingAuth.toolName} skipped by user (no login).`,
+    };
+    const metadataPath = await this.assets.writeAssetMetadata(runId, skippedAsset);
+
     return this.state.update(runId, (draft) => {
-      draft.events.push(this.state.event("awaiting_image_generation", `Manual auth override accepted for ${draft.pendingAuth?.toolName ?? "tool"}.`));
+      const existing = draft.imageAssets.findIndex((a) => a.id === skippedAsset.id);
+      if (existing >= 0) {
+        draft.imageAssets[existing] = { ...skippedAsset, metadataPath };
+      } else {
+        draft.imageAssets.push({ ...skippedAsset, metadataPath });
+      }
+      draft.events.push(this.state.event("awaiting_image_generation", `${run.pendingAuth!.toolName} skipped by user.`));
       draft.pendingAuth = undefined;
+      draft.activeToolId = undefined;
+      draft.activeToolName = undefined;
       draft.stage = "awaiting_image_generation";
     });
   }

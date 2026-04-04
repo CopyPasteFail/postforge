@@ -9,6 +9,8 @@ export type ToolId =
 
 export interface ImageToolConfig {
   id: Exclude<ToolId, "linkedin">;
+  /** Browser profile directory to use. Defaults to id. Set to "google" to share one login across Gemini/AI Studio/Flow. */
+  profileId?: string;
   name: string;
   url: string;
   setting: string;
@@ -79,25 +81,20 @@ export const imageToolConfigs: ImageToolConfig[] = [
   },
   {
     id: "gemini",
+    profileId: "google",
     name: "Gemini",
     url: "https://gemini.google.com/",
     setting: "Create Image",
     loginIndicators: {
       loggedInSelectors: [
-        "div.ql-editor[contenteditable='true'][role='textbox'][aria-label*='Gemini']",
-        "div[contenteditable='true'][role='textbox'][data-placeholder*='Ask Gemini']",
-        "textarea",
-        "input[aria-label*='prompt']",
-        "div[contenteditable='true']",
-        "button[aria-label*='New chat']",
-        "button[aria-label*='Open side panel']",
-        "[data-test-id='bard-avatar']",
-        "button:has-text('Create image')",
-        "button:has-text('Create music')",
+        "a[aria-label*='Google Account']",
+        "[aria-label*='Google Account']",
       ],
       loggedOutSelectors: [
-        "a[href*='accounts.google.com']",
+        // Note: do NOT use a[href*='accounts.google.com'] — the logged-in account
+        // avatar also links to accounts.google.com, which would cause false negatives.
         "button:has-text('Sign in')",
+        "a:has-text('Sign in')",
       ],
     },
     promptSelectors: [
@@ -124,6 +121,7 @@ export const imageToolConfigs: ImageToolConfig[] = [
   },
   {
     id: "ai-studio",
+    profileId: "google",
     name: "AI Studio",
     url: "https://aistudio.google.com/",
     setting: "nano banana",
@@ -169,6 +167,7 @@ export const imageToolConfigs: ImageToolConfig[] = [
   },
   {
     id: "flow",
+    profileId: "google",
     name: "Flow",
     url: "https://labs.google/fx/tools/flow",
     setting: "nano banana 2, 2 images",

@@ -18,18 +18,18 @@ class ChatGptToolAdapter extends GenericImageToolAdapter {
     await image.hover().catch(() => undefined);
     const downloadSelector = await waitForAnySelector(page, this.downloadButtonSelectors(), 10_000);
     if (downloadSelector) {
-      console.log(`[ChatGPT] result-action-ready: Download control visible via ${downloadSelector}`);
+      console.error(`[ChatGPT] result-action-ready: Download control visible via ${downloadSelector}`);
     }
   }
 
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
     const downloaded = await this.downloadFromChatGpt(page, outputDir);
     if (downloaded) {
-      console.log(`[ChatGPT] result-saved: Downloaded image artifact ${downloaded}`);
+      console.error(`[ChatGPT] result-saved: Downloaded image artifact ${downloaded}`);
       return [downloaded];
     }
 
-    console.log("[ChatGPT] result-download-fallback: Falling back to generic media capture");
+    console.error("[ChatGPT] result-download-fallback: Falling back to generic media capture");
     return super.captureResultElements(page, outputDir);
   }
 
@@ -47,7 +47,7 @@ class ChatGptToolAdapter extends GenericImageToolAdapter {
         continue;
       }
 
-      console.log(`[ChatGPT] download-found: Using ${selector}`);
+      console.error(`[ChatGPT] download-found: Using ${selector}`);
       const download = await this.clickAndCaptureDownload(page, button);
       if (!download) {
         continue;
@@ -96,7 +96,7 @@ class ChatGptToolAdapter extends GenericImageToolAdapter {
     await button.click().catch(() => undefined);
     const download = await downloadPromise;
     if (download) {
-      console.log(`[ChatGPT] download-clicked: Browser download started as ${download.suggestedFilename()}`);
+      console.error(`[ChatGPT] download-clicked: Browser download started as ${download.suggestedFilename()}`);
     }
     return download;
   }

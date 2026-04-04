@@ -55,7 +55,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
   }
 
   public async testPromptInsertion(promptText: string, keepOpen = true): Promise<void> {
-    const context = await this.browser.launchPersistent(this.config.id);
+    const context = await this.browser.launchPersistent(this.config.id, this.config.profileId);
     const page = await context.newPage();
     try {
       this.logStep("navigating", `Opening ${this.config.url}`);
@@ -98,7 +98,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
   public async generate(runId: string, promptText: string, outputDir: string, interactive = true): Promise<ImageAsset> {
     await fs.mkdir(outputDir, { recursive: true });
 
-    const { context, page } = await this.browser.launchPage(this.config.id);
+    const { context, page } = await this.browser.launchPage(this.config.id, this.config.profileId);
     try {
       this.logStep("navigating", `Opening ${this.config.url}`);
       await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
@@ -150,7 +150,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
           : `${this.config.name} completed but no result elements were captured automatically. Review the page screenshot and tune selectors if needed.`,
       };
     } finally {
-      await context.close();
+      await context.close().catch(() => undefined);
     }
   }
 
@@ -521,7 +521,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
   }
 
   private logStep(step: string, detail: string): void {
-    console.log(`[${this.config.name}] ${step}: ${detail}`);
+    console.error(`[${this.config.name}] ${step}: ${detail}`);
   }
 
   private async pickBestPromptLocator(page: Page): Promise<Locator | undefined> {

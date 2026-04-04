@@ -31,8 +31,8 @@ const sameOrigin = (left: string, right: string): boolean => {
 };
 
 export class BrowserService {
-  public async launchPersistent(toolId: string): Promise<BrowserContext> {
-    const context = await chromium.launchPersistentContext(toolProfilePath(toolId), {
+  public async launchPersistent(toolId: string, profileId?: string): Promise<BrowserContext> {
+    const context = await chromium.launchPersistentContext(toolProfilePath(profileId ?? toolId), {
       channel: browserChannel,
       headless,
       acceptDownloads: true,
@@ -57,8 +57,8 @@ export class BrowserService {
     return context;
   }
 
-  public async launchPage(toolId: string): Promise<{ context: BrowserContext; page: Page }> {
-    const context = await this.launchPersistent(toolId);
+  public async launchPage(toolId: string, profileId?: string): Promise<{ context: BrowserContext; page: Page }> {
+    const context = await this.launchPersistent(toolId, profileId);
     const toolUrl = toolUrlFor(toolId);
     const matchingPage = toolUrl
       ? context.pages().find((page) => sameOrigin(page.url(), toolUrl))

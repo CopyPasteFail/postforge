@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import { stdin as input, stdout as output } from "node:process";
 
 import { linkedInConfig, type ImageToolConfig, type LinkedInConfig, type ToolId } from "../config/tools.js";
@@ -23,11 +23,19 @@ export class AuthRequiredError extends Error {
   }
 }
 
+export type AuthOpenResult =
+  | { status: "authenticated" }
+  | { status: "awaiting_login"; loginUrl: string; message: string };
+
 export class AuthService {
+  /** Open contexts kept alive so the user can log in, keyed by profile/tool id. */
+  private readonly openContexts = new Map<string, BrowserContext>();
+
   public constructor(private readonly browser = new BrowserService()) {}
 
   public async ensureAuthenticated(config: AuthConfig, interactive = true): Promise<void> {
-    const { context, page } = await this.browser.launchPage(config.id);
+    const profileId = "profileId" in config ? config.profileId : undefined;
+    const { context, page } = await this.browser.launchPage(config.id, profileId);
     try {
       await page.goto(config.url, { waitUntil: "domcontentloaded" });
       const authenticated = await this.isAuthenticated(page, config);
@@ -39,13 +47,13 @@ export class AuthService {
         throw new AuthRequiredError(this.checkpoint(config, "Authentication is required before continuing."));
       }
 
-      console.log(`\n${config.name} is not logged in.`);
-      console.log(`Open browser profile: ${config.id}`);
-      console.log(`Please log in manually at ${config.url}.\n`);
+      console.error(`\n${config.name} is not logged in.`);
+      console.error(`Open browser profile: ${config.id}`);
+      console.error(`Please log in manually at ${config.url}.\n`);
       if (input.isTTY && output.isTTY) {
         await waitForConfirmation(`Finish logging in to ${config.name}.`);
       } else {
-        console.log(`Waiting for ${config.name} login to complete in the opened browser window...`);
+        console.error(`Waiting for ${config.name} login to complete in the opened browser window...`);
         await this.waitForLogin(page, config);
       }
 
@@ -54,7 +62,7 @@ export class AuthService {
         throw new AuthRequiredError(this.checkpoint(config, "Login was not detected after confirmation."));
       }
     } finally {
-      await context.close();
+      await context.close().catch(() => undefined);
     }
   }
 
@@ -64,6 +72,43 @@ export class AuthService {
     }
 
     await this.ensureAuthenticated(linkedInConfig, false);
+  }
+
+  /**
+   * Non-blocking auth check for the ensure_auth MCP tool.
+   *
+   * - If already authenticated: closes the browser and returns `{ status: "authenticated" }`.
+   * - If not authenticated: leaves the browser window open (so the user can log in) and
+   *   returns `{ status: "awaiting_login", ... }`.  Call this method again once the user
+   *   has finished logging in; it will close the previous window and open a fresh check.
+   */
+  public async openAndCheckAuth(config: AuthConfig): Promise<AuthOpenResult> {
+    const profileId = "profileId" in config ? config.profileId : undefined;
+    const key = profileId ?? config.id;
+
+    // Close any previously-left-open browser for this profile so we don't accumulate windows.
+    const prev = this.openContexts.get(key);
+    if (prev) {
+      this.openContexts.delete(key);
+      await prev.close().catch(() => undefined);
+    }
+
+    const { context, page } = await this.browser.launchPage(config.id, profileId);
+
+    const authenticated = await this.isAuthenticated(page, config);
+    if (authenticated) {
+      await context.close().catch(() => undefined);
+      return { status: "authenticated" };
+    }
+
+    // Not logged in — keep the browser open so the user can log in without reopening it.
+    this.openContexts.set(key, context);
+    console.error(`[auth] ${config.name} not authenticated — browser left open at ${config.url}`);
+    return {
+      status: "awaiting_login",
+      loginUrl: config.url,
+      message: `${config.name} browser is open. Log in, then call ensure_auth again to confirm.`,
+    };
   }
 
   public async isAuthenticated(page: Page, config: AuthConfig): Promise<boolean> {
@@ -79,7 +124,7 @@ export class AuthService {
       return this.isGrokAvailable(page, config);
     }
 
-    const loggedOutMatch = await waitForAnySelector(page, config.loginIndicators.loggedOutSelectors, 3_000);
+    const loggedOutMatch = await waitForAnySelector(page, config.loginIndicators.loggedOutSelectors, 8_000);
     if (loggedOutMatch) {
       return false;
     }
@@ -117,59 +162,32 @@ export class AuthService {
 
     const url = page.url();
     const normalizedUrl = url.toLowerCase();
-    const appRoute = normalizedUrl.includes("gemini.google.com/app");
 
     if (
       normalizedUrl.includes("accounts.google.com")
       || normalizedUrl.includes("/signin")
       || normalizedUrl.includes("/servicelogin")
     ) {
+      this.logGeminiAuth(`redirected to sign-in @ ${url}`);
       return false;
     }
 
-    const shellSelectors = [
-      "div.ql-editor[contenteditable='true'][role='textbox'][aria-label*='Gemini']",
-      "div[contenteditable='true'][role='textbox'][aria-label*='Enter a prompt for Gemini']",
-      "div[contenteditable='true'][role='textbox'][data-placeholder*='Ask Gemini']",
-      "div[contenteditable='true'][data-placeholder*='Ask Gemini']",
-      "button:has-text('Create image')",
-      "button:has-text('Create music')",
-      "button:has-text('Write anything')",
-      "button:has-text('Help me learn')",
-      "button:has-text('Boost my day')",
-      "button[aria-label*='Open side panel']",
-      "button[aria-label*='New chat']",
-      "nav",
-      "main",
-    ];
-
-    const visibleShell = await this.firstVisibleSelector(page, shellSelectors);
-    const visibleLoggedIn = await this.firstVisibleSelector(page, config.loginIndicators.loggedInSelectors);
-
-    if (appRoute && (visibleShell || visibleLoggedIn)) {
-      this.logGeminiAuth(`authenticated via app shell @ ${url}; shell=${visibleShell ?? "none"} loggedIn=${visibleLoggedIn ?? "none"}`);
-      return true;
-    }
-
+    // Check for explicit logged-out indicators first (sign-in button visible)
     const loggedOutVisible = await this.firstVisibleSelector(page, config.loginIndicators.loggedOutSelectors);
     if (loggedOutVisible) {
-      this.logGeminiAuth(`logged-out selector visible without app shell: ${loggedOutVisible} @ ${url}`);
+      this.logGeminiAuth(`logged-out selector visible: ${loggedOutVisible} @ ${url}`);
       return false;
     }
 
-    for (const selector of config.loginIndicators.loggedOutSelectors) {
-      if (await hasVisibleSelector(page, selector)) {
-        return false;
-      }
-    }
-
+    // The Google Account button is the only reliable logged-in indicator.
+    // Generic selectors (nav, main, New chat) appear for anonymous users too.
     const loggedInMatch = await waitForAnySelector(page, config.loginIndicators.loggedInSelectors, 5_000);
     if (loggedInMatch) {
-      this.logGeminiAuth(`authenticated via logged-in selector ${loggedInMatch} @ ${url}`);
+      this.logGeminiAuth(`authenticated via ${loggedInMatch} @ ${url}`);
       return true;
     }
 
-    this.logGeminiAuth(`no authenticated Gemini shell detected @ ${url}`);
+    this.logGeminiAuth(`no Google Account indicator found @ ${url}`);
     return false;
   }
 
@@ -184,7 +202,7 @@ export class AuthService {
   }
 
   private logGeminiAuth(message: string): void {
-    console.log(`[Gemini auth] ${message}`);
+    console.error(`[Gemini auth] ${message}`);
   }
 
   private async isGrokAvailable(page: Page, config: AuthConfig): Promise<boolean> {
@@ -197,7 +215,7 @@ export class AuthService {
       normalizedUrl.includes("/sign-in")
       || normalizedUrl.includes("/sign-up")
     ) {
-      console.log(`[Grok auth] landed on auth route @ ${url}`);
+      console.error(`[Grok auth] landed on auth route @ ${url}`);
       return false;
     }
 
@@ -211,13 +229,13 @@ export class AuthService {
 
     const usable = await this.firstVisibleSelector(page, usableSelectors);
     if (usable) {
-      console.log(`[Grok auth] usable anonymous or signed-in shell via ${usable} @ ${url}`);
+      console.error(`[Grok auth] usable anonymous or signed-in shell via ${usable} @ ${url}`);
       return true;
     }
 
     const loggedOutVisible = await this.firstVisibleSelector(page, config.loginIndicators.loggedOutSelectors);
     if (loggedOutVisible) {
-      console.log(`[Grok auth] logged-out controls visible without usable shell: ${loggedOutVisible} @ ${url}`);
+      console.error(`[Grok auth] logged-out controls visible without usable shell: ${loggedOutVisible} @ ${url}`);
       return false;
     }
 
@@ -236,7 +254,7 @@ export class AuthService {
       || normalizedUrl.includes("/signin")
       || normalizedUrl.includes("/servicelogin")
     ) {
-      console.log(`[Flow auth] detected Google sign-in route @ ${url}`);
+      console.error(`[Flow auth] detected Google sign-in route @ ${url}`);
       return false;
     }
 
@@ -250,7 +268,7 @@ export class AuthService {
 
     const visibleWorkspace = await this.firstVisibleSelector(page, workspaceSelectors);
     if (visibleWorkspace) {
-      console.log(`[Flow auth] authenticated via workspace selector ${visibleWorkspace} @ ${url}`);
+      console.error(`[Flow auth] authenticated via workspace selector ${visibleWorkspace} @ ${url}`);
       return true;
     }
 
@@ -262,14 +280,14 @@ export class AuthService {
     if (!launcherSelector) {
       const loggedOutVisible = await this.firstVisibleSelector(page, config.loginIndicators.loggedOutSelectors);
       if (loggedOutVisible) {
-        console.log(`[Flow auth] logged-out selector visible: ${loggedOutVisible} @ ${url}`);
+        console.error(`[Flow auth] logged-out selector visible: ${loggedOutVisible} @ ${url}`);
         return false;
       }
 
       return false;
     }
 
-    console.log(`[Flow auth] probing launcher ${launcherSelector} @ ${url}`);
+    console.error(`[Flow auth] probing launcher ${launcherSelector} @ ${url}`);
     await page.locator(launcherSelector).first().click().catch(() => undefined);
     await delay(4_000);
 
@@ -280,17 +298,17 @@ export class AuthService {
       || normalizedNextUrl.includes("/signin")
       || normalizedNextUrl.includes("/servicelogin")
     ) {
-      console.log(`[Flow auth] launcher redirected to Google sign-in @ ${nextUrl}`);
+      console.error(`[Flow auth] launcher redirected to Google sign-in @ ${nextUrl}`);
       return false;
     }
 
     const visibleAfterLaunch = await this.firstVisibleSelector(page, workspaceSelectors);
     if (visibleAfterLaunch) {
-      console.log(`[Flow auth] authenticated after launcher via ${visibleAfterLaunch} @ ${nextUrl}`);
+      console.error(`[Flow auth] authenticated after launcher via ${visibleAfterLaunch} @ ${nextUrl}`);
       return true;
     }
 
-    console.log(`[Flow auth] launcher did not reach a detectable workspace @ ${nextUrl}`);
+    console.error(`[Flow auth] launcher did not reach a detectable workspace @ ${nextUrl}`);
     return false;
   }
 }
