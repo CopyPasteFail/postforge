@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const resolveDataDir = (): string => {
   const configured = process.env.PIPELINE_DATA_DIR;
@@ -35,7 +36,7 @@ export const outputPaths = (runId: string) => ({
 
 // path to bundled prompt files (resolved relative to the compiled server)
 export const promptsDir = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
+  path.dirname(fileURLToPath(import.meta.url)),
   "..",
   "prompts",
 );
