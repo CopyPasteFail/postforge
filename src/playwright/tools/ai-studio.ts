@@ -1,0 +1,471 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+
+import type { Download, Locator, Page } from "playwright";
+
+import { imageToolConfigs } from "../../config/tools.js";
+import type { ImageAsset } from "../../pipeline/types.js";
+import { AuthService } from "../auth.js";
+import { BrowserService } from "../browser.js";
+import { delay, waitForAnySelector } from "../waits.js";
+import { GenericImageToolAdapter, ToolGenerationBlockedError } from "./base.js";
+
+class AiStudioToolAdapter extends GenericImageToolAdapter {
+  private static readonly imageGenerationUrl = "https://aistudio.google.com/prompts/new_chat";
+  private readonly aiStudioBrowser = new BrowserService();
+  private readonly aiStudioAuth = new AuthService(this.aiStudioBrowser);
+
+  protected override async configureMode(page: Page): Promise<void> {
+    await this.openImageGeneration(page);
+    await this.selectFreeNanoBanana(page);
+  }
+
+  public async downloadFromPromptUrl(runId: string, promptUrl: string, outputDir: string): Promise<ImageAsset> {
+    await fs.mkdir(outputDir, { recursive: true });
+
+    const { context, page } = await this.aiStudioBrowser.launchPage(this.config.id);
+    try {
+      console.log(`[${this.config.name}] navigating: Opening saved prompt ${promptUrl}`);
+      await page.goto(promptUrl, { waitUntil: "domcontentloaded" });
+
+      const isLoggedIn = await this.aiStudioAuth.isAuthenticated(page, this.config);
+      if (!isLoggedIn) {
+        await context.close();
+        await this.ensureAuthenticated(true);
+        return this.downloadFromPromptUrl(runId, promptUrl, outputDir);
+      }
+
+      const screenshotPath = path.join(outputDir, "ai-studio-existing-prompt.png");
+      await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => undefined);
+
+      const downloaded = await this.downloadGeneratedImage(page, outputDir);
+      return {
+        id: `${runId}:${this.config.id}`,
+        toolId: this.config.id,
+        toolName: this.config.name,
+        status: downloaded ? "generated" : "warning",
+        files: downloaded ? [downloaded] : [],
+        screenshotPath,
+        notes: downloaded
+          ? `Downloaded image from existing AI Studio prompt ${promptUrl}.`
+          : `Opened existing AI Studio prompt ${promptUrl}, but could not find a downloadable generated image.`,
+      };
+    } finally {
+      await context.close().catch(() => undefined);
+    }
+  }
+
+  protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
+    const downloaded = await this.downloadGeneratedImage(page, outputDir);
+    if (downloaded) {
+      console.log(`[${this.config.name}] result-saved: Downloaded full-size image artifact ${downloaded}`);
+      return [downloaded];
+    }
+
+    return super.captureResultElements(page, outputDir);
+  }
+
+  protected override async waitForResultElements(page: Page, timeoutMs = 120_000): Promise<void> {
+    let rerunAttempted = false;
+    const runButton = await this.findRunButton(page);
+    if (runButton) {
+      await this.waitForRunCycle(runButton, Math.max(timeoutMs, 180_000));
+      await this.scrollToBottom(page);
+      if (await this.isContentBlocked(page)) {
+        throw new ToolGenerationBlockedError(
+          "Image could not be produced due to a copyright or content block from AI Studio.",
+          "copyright_block",
+        );
+      }
+      if (await this.findGeneratedImage(page)) {
+        return;
+      }
+
+      if (!rerunAttempted && await this.tryRerunTurn(page)) {
+        rerunAttempted = true;
+        await delay(2_000);
+      }
+    }
+
+    const deadline = Date.now() + Math.max(timeoutMs, 180_000);
+    while (Date.now() < deadline) {
+      await this.scrollToBottom(page);
+
+      if (await this.isContentBlocked(page)) {
+        throw new ToolGenerationBlockedError(
+          "Image could not be produced due to a copyright or content block from AI Studio.",
+          "copyright_block",
+        );
+      }
+
+      await super.waitForResultElements(page, 8_000);
+      if (await this.findGeneratedImage(page)) {
+        return;
+      }
+
+      if (!rerunAttempted && await this.tryRerunTurn(page)) {
+        rerunAttempted = true;
+        await delay(2_000);
+      }
+    }
+
+    if (await this.isContentBlocked(page)) {
+      throw new ToolGenerationBlockedError(
+        "Image could not be produced due to a copyright or content block from AI Studio.",
+        "copyright_block",
+      );
+    }
+
+    if (await this.findGeneratedImage(page)) {
+      return;
+    }
+  }
+
+  private async openImageGeneration(page: Page): Promise<void> {
+    const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
+    if (
+      !page.url().includes("/prompts/new_chat")
+      || bodyText.toLowerCase().includes("the specified model was not recognized")
+    ) {
+      await page.goto(AiStudioToolAdapter.imageGenerationUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+      await delay(2_000);
+    }
+
+    if (await this.isNanoBananaSelected(page)) {
+      return;
+    }
+
+    const tileSelectors = [
+      "div[role='button']:has-text('Image Generation')",
+      "button:has-text('Image Generation')",
+      "a:has-text('Image Generation')",
+      "div:has(> div:text-is('Image Generation'))",
+      "text=Image Generation",
+    ];
+
+    const tileSelector = await waitForAnySelector(page, tileSelectors, 5_000);
+    if (tileSelector) {
+      const tile = page.locator(tileSelector).first();
+      await tile.scrollIntoViewIfNeeded().catch(() => undefined);
+      await tile.click().catch(() => undefined);
+      await delay(2_000);
+      if (await this.isNanoBananaSelected(page) || await this.waitForComposer(page, 2_000)) {
+        return;
+      }
+    }
+
+    const selector = await waitForAnySelector(page, [
+      "div[role='button']:has-text('Image Generation')",
+      "button:has-text('Image Generation')",
+      "a:has-text('Image Generation')",
+      "text=Image Generation",
+    ], 15_000);
+
+    if (!selector) {
+      return;
+    }
+
+    const target = page.locator(selector).first();
+    await target.scrollIntoViewIfNeeded().catch(() => undefined);
+    await target.click().catch(() => undefined);
+    await delay(2_000);
+  }
+
+  private async selectFreeNanoBanana(page: Page): Promise<void> {
+    await waitForAnySelector(page, [
+      "text=Nano Banana",
+      "text=gemini-2.5-flash-image",
+      "text=Image Generation",
+    ], 15_000).catch(() => undefined);
+
+    if (await this.isNanoBananaSelected(page)) {
+      return;
+    }
+
+    const row = await this.findExactNanoBananaRow(page);
+    if (row) {
+      await row.scrollIntoViewIfNeeded().catch(() => undefined);
+      await row.click().catch(() => undefined);
+      await delay(1_000);
+    }
+
+    if (await this.isNanoBananaSelected(page) || await this.waitForComposer(page, 4_000)) {
+      return;
+    }
+
+    const title = page.getByText("Nano Banana", { exact: true }).first();
+    if (await title.isVisible().catch(() => false)) {
+      await title.scrollIntoViewIfNeeded().catch(() => undefined);
+      await title.click().catch(() => undefined);
+      await delay(1_500);
+    }
+
+    if (await this.isNanoBananaSelected(page) || await this.waitForComposer(page, 4_000)) {
+      return;
+    }
+
+    await this.tryExactNanoBananaActions(page);
+  }
+
+  private async isNanoBananaSelected(page: Page): Promise<boolean> {
+    const candidates = [
+      "button:has-text('Nano Banana'):has-text('gemini-2.5-flash-image')",
+      "button:has-text('Nano Banana')",
+      "text=gemini-2.5-flash-image",
+    ];
+
+    for (const selector of candidates) {
+      const locator = page.locator(selector).first();
+      if (await locator.isVisible().catch(() => false)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async findExactNanoBananaRow(page: Page): Promise<Locator | undefined> {
+    const exactTitle = page.getByText("Nano Banana", { exact: true }).first();
+    if (!(await exactTitle.isVisible().catch(() => false))) {
+      return undefined;
+    }
+
+    const row = exactTitle.locator("xpath=ancestor-or-self::div[count(.//button) >= 1][1]");
+    if (await row.isVisible().catch(() => false)) {
+      return row;
+    }
+
+    return exactTitle;
+  }
+
+  private async tryExactNanoBananaActions(page: Page): Promise<void> {
+    const row = await this.findExactNanoBananaRow(page);
+    if (!row) {
+      return;
+    }
+
+    const buttons = row.locator("button, [role='button']");
+    const count = await buttons.count().catch(() => 0);
+    for (let index = count - 1; index >= 0; index -= 1) {
+      const button = buttons.nth(index);
+      const visible = await button.isVisible().catch(() => false);
+      if (!visible) {
+        continue;
+      }
+
+      await button.scrollIntoViewIfNeeded().catch(() => undefined);
+      await button.click().catch(() => undefined);
+      await delay(1_500);
+      if (await this.waitForComposer(page, 3_000)) {
+        return;
+      }
+    }
+  }
+
+  private async waitForComposer(page: Page, timeoutMs: number): Promise<boolean> {
+    const selectors = [
+      "textarea[placeholder*='Start typing a prompt']",
+      "textarea[aria-label*='prompt']",
+      "textarea",
+      "div[contenteditable='true'][role='textbox']",
+      "div[contenteditable='true']",
+    ];
+
+    if (await waitForAnySelector(page, selectors, timeoutMs)) {
+      return true;
+    }
+
+    await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "instant" })).catch(() => undefined);
+    await delay(500);
+    if (await waitForAnySelector(page, selectors, Math.min(timeoutMs, 2_000))) {
+      return true;
+    }
+
+    await page.keyboard.press("End").catch(() => undefined);
+    await delay(500);
+    return Boolean(await waitForAnySelector(page, selectors, Math.min(timeoutMs, 2_000)));
+  }
+
+  private async downloadGeneratedImage(page: Page, outputDir: string): Promise<string | undefined> {
+    await this.scrollToBottom(page);
+    const image = await this.findGeneratedImage(page);
+    if (!image) {
+      return undefined;
+    }
+
+    await image.scrollIntoViewIfNeeded().catch(() => undefined);
+    await image.hover().catch(() => undefined);
+    await delay(1_000);
+
+    const downloadButton = await this.findDownloadButton(page, image);
+    if (!downloadButton) {
+      return undefined;
+    }
+
+    const download = await this.clickAndWaitForDownload(page, downloadButton);
+    if (!download) {
+      return undefined;
+    }
+
+    const suggestedFilename = download.suggestedFilename();
+    const filePath = path.join(outputDir, suggestedFilename);
+    await download.saveAs(filePath);
+    return filePath;
+  }
+
+  private async findGeneratedImage(page: Page): Promise<Locator | undefined> {
+    await this.scrollToBottom(page);
+    const candidates = [
+      page.locator("img[alt*='Generated Image']").first(),
+      page.locator("img[alt$='.png']").first(),
+      page.locator("img").last(),
+      page.locator("canvas").last(),
+    ];
+
+    for (const candidate of candidates) {
+      const visible = await candidate.isVisible().catch(() => false);
+      if (visible) {
+        return candidate;
+      }
+    }
+
+    return undefined;
+  }
+
+  private async findRunButton(page: Page): Promise<Locator | undefined> {
+    for (const selector of [
+      "button:has-text('Run')",
+      "button[aria-label*='Run']",
+    ]) {
+      const button = page.locator(selector).first();
+      if (await button.isVisible().catch(() => false)) {
+        return button;
+      }
+    }
+
+    return undefined;
+  }
+
+  private async isContentBlocked(page: Page): Promise<boolean> {
+    const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
+    const normalized = bodyText.toLowerCase();
+    return normalized.includes("content blocked")
+      || normalized.includes("request blocked")
+      || normalized.includes("safety blocked")
+      || normalized.includes("copyright")
+      || normalized.includes("third-party content");
+  }
+
+  private async waitForRunCycle(runButton: Locator, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let sawDisabled = false;
+
+    while (Date.now() < deadline) {
+      const disabled = await this.isButtonDisabled(runButton);
+      if (disabled) {
+        sawDisabled = true;
+      } else if (sawDisabled) {
+        return;
+      }
+
+      await delay(1_000);
+    }
+  }
+
+  private async isButtonDisabled(button: Locator): Promise<boolean> {
+    return button.evaluate((node) => {
+      const element = node as HTMLButtonElement;
+      const ariaDisabled = element.getAttribute("aria-disabled");
+      return element.disabled || ariaDisabled === "true";
+    }).catch(() => false);
+  }
+
+  private async scrollToBottom(page: Page): Promise<void> {
+    await page.evaluate(() => {
+      const root = document.scrollingElement ?? document.documentElement ?? document.body;
+      root.scrollTo({ top: root.scrollHeight, behavior: "instant" });
+    }).catch(() => undefined);
+    await page.keyboard.press("End").catch(() => undefined);
+    await delay(500);
+  }
+
+  private async findDownloadButton(page: Page, image: Locator): Promise<Locator | undefined> {
+    const selectors = [
+      "button[aria-label*='Download']",
+      "button:has-text('Download')",
+    ];
+
+    for (const selector of selectors) {
+      const globalButton = page.locator(selector).first();
+      if (await globalButton.isVisible().catch(() => false)) {
+        return globalButton;
+      }
+    }
+
+    await image.hover().catch(() => undefined);
+    await delay(500);
+
+    return undefined;
+  }
+
+  private async clickAndWaitForDownload(page: Page, button: Locator): Promise<Download | undefined> {
+    const downloadPromise = page.waitForEvent("download", { timeout: 30_000 }).catch(() => undefined);
+    await button.click().catch(() => undefined);
+    return downloadPromise;
+  }
+
+  private async tryRerunTurn(page: Page): Promise<boolean> {
+    const directSelectors = [
+      "button[aria-label*='Rerun this turn']",
+      "button[aria-label*='Rerun']",
+      "button[title*='Rerun this turn']",
+      "button[title*='Rerun']",
+      "button:has-text('Rerun this turn')",
+      "button:has-text('Rerun')",
+    ];
+
+    for (const selector of directSelectors) {
+      const button = page.locator(selector).first();
+      if (await button.isVisible().catch(() => false)) {
+        await button.click().catch(() => undefined);
+        await delay(1_500);
+        return true;
+      }
+    }
+
+    const overflowButton = page.locator([
+      "button[aria-label*='More']",
+      "button[aria-label*='more']",
+      "button[aria-label='Open menu']",
+      "button:has(svg)",
+    ].join(", ")).last();
+
+    if (!(await overflowButton.isVisible().catch(() => false))) {
+      return false;
+    }
+
+    await overflowButton.click().catch(() => undefined);
+    await delay(500);
+
+    for (const selector of [
+      "[role='menuitem']:has-text('Rerun this turn')",
+      "[role='menuitem']:has-text('Rerun')",
+      "button:has-text('Rerun this turn')",
+      "button:has-text('Rerun')",
+      "text=Rerun this turn",
+    ]) {
+      const item = page.locator(selector).first();
+      if (await item.isVisible().catch(() => false)) {
+        await item.click().catch(() => undefined);
+        await delay(1_500);
+        return true;
+      }
+    }
+
+    return false;
+  }
+}
+
+export const aiStudioAdapter = new AiStudioToolAdapter(
+  imageToolConfigs.find((tool) => tool.id === "ai-studio")!,
+);
