@@ -16,8 +16,8 @@ The host agent (Claude, Codex, Gemini CLI) owns all reasoning. This server owns 
 ## Setup
 
 ```bash
-git clone https://github.com/copypastefail/linkedin-post-agent.git
-cd linkedin-post-agent
+git clone https://github.com/CopyPasteFail/postforge.git
+cd postforge
 npm install
 npm run build
 ```

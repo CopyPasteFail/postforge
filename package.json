@@ -1,5 +1,5 @@
 {
-  "name": "@copypastefail/linkedin-post-agent",
+  "name": "@copypastefail/postforge",
   "version": "1.0.0",
   "type": "module",
   "private": false,
