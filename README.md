@@ -75,27 +75,44 @@ If installed as a Claude Code plugin, the skill is also available via the `/link
 
 ## Install: Codex
 
-**Step 1 — Register the MCP server**
-
-Add to your Codex MCP config (`~/.codex/config.toml` or project `.codex/config.toml`):
-
-```toml
-[mcp_servers.linkedin-post-agent]
-command = "node"
-args = ["/absolute/path/to/postforge/dist/server.js"]
-```
-
-Or use the CLI:
+**macOS / Linux — copy-paste the whole block:**
 
 ```bash
-codex mcp add linkedin-post-agent -- node /absolute/path/to/postforge/dist/server.js
+git clone https://github.com/CopyPasteFail/postforge.git ~/.codex/postforge
+cd ~/.codex/postforge
+npm install
+npx playwright install chromium
+npm run build
+
+mkdir -p ~/.agents/skills
+ln -s ~/.codex/postforge/skills ~/.agents/skills/postforge
+
+codex mcp add linkedin-post-agent -- node ~/.codex/postforge/dist/server.js
 ```
 
-**Step 2 — Point Codex at this repo**
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/CopyPasteFail/postforge.git "$env:USERPROFILE\.codex\postforge"
+Set-Location "$env:USERPROFILE\.codex\postforge"
+npm install
+npx playwright install chromium
+npm run build
+
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.agents\skills"
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.agents\skills\postforge" `
+  -Target "$env:USERPROFILE\.codex\postforge\skills"
+
+codex mcp add linkedin-post-agent -- node "$env:USERPROFILE\.codex\postforge\dist\server.js"
+```
+
+**Verify — restart Codex, then paste this:**
+
+```
+Use the linkedin-post skill from postforge and run doctor.
+```
 
 Codex reads `agents/openai.yaml` for skill metadata and MCP dependency. The skill definition is in `skills/linkedin-post/SKILL.md`. Repo guidance is in `AGENTS.md`.
-
-**Step 3 — First-run checks** (see checklist below)
 
 ---
 
@@ -112,6 +129,22 @@ After wiring up your agent, verify these before your first post:
 Repeat step 3 for every image tool you enabled in `.env` (gemini, ai-studio, flow, grok, copilot). Auth sessions persist in browser profiles — you only do this once per tool.
 
 If `doctor` reports problems, fix them before continuing.
+
+---
+
+## Bootstrap Prompt
+
+Once setup is complete, paste this into your agent to start a run:
+
+```
+Use the linkedin-post skill from postforge.
+
+First run doctor. Then run ensure_auth for linkedin and for any image tools
+you have enabled. After both pass, follow the skill workflow exactly.
+
+If I haven't provided a link or idea, start with Phase 0 news discovery.
+Never click Post automatically — stop at the ready_to_post stage and confirm with me first.
+```
 
 ---
 
