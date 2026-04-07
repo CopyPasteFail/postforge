@@ -118,7 +118,6 @@ export class ImageRunnerAgent {
    */
   private async runSingleTool(adapter: ToolAdapter, runId: string, promptText: string): Promise<ImageAsset> {
     const attempt = async (): Promise<ImageAsset> => {
-      await adapter.ensureAuthenticated(false);
       const outputDir = await this.assets.ensureToolDir(runId, adapter.config.id);
       const generatedAsset = await adapter.generate(runId, promptText, outputDir, false);
       const asset = await this.assets.finalizeAsset(runId, generatedAsset);

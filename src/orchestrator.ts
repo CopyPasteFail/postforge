@@ -14,7 +14,7 @@ import { AssetStore } from "./storage/assets.js";
 import { StateStore } from "./storage/state-store.js";
 import { ImageRunnerAgent } from "./agents/image-runner.js";
 import { LinkedInPreparerAgent } from "./agents/linkedin-preparer.js";
-import { AuthRequiredError } from "./playwright/auth.js";
+import { AuthRequiredError, CaptchaRequiredError } from "./playwright/auth.js";
 
 const INACCESSIBLE_FALLBACK = "I can't access enough of that link to use it reliably. Please paste the exact article title and the relevant article text, and I'll draft from that only.";
 
@@ -110,7 +110,7 @@ export class OrchestratorAgent {
         draft.events.push(this.state.event("awaiting_image_selection", "Image generation completed."));
       });
     } catch (error) {
-      if (error instanceof AuthRequiredError) {
+      if (error instanceof AuthRequiredError || error instanceof CaptchaRequiredError) {
         return this.state.update(runId, (draft) => {
           draft.pendingAuth = error.checkpoint;
           draft.activeToolId = error.checkpoint.toolId;

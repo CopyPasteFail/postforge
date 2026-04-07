@@ -191,7 +191,7 @@ When the user confirms the prompt, use the MCP tools to hand off to the browser 
 3. Call `generate_image_candidates` with the `run_id`.
    - This is a long-running operation. The MCP server opens Playwright browsers, navigates to each enabled AI tool (ChatGPT, Gemini, AI Studio, Flow, Grok, Copilot), pastes the prompt, waits for generation, and captures the results.
    - The response contains a `candidates` array with numbered entries, each showing `tool_id`, `tool_name`, `status`, and `file_path`.
-   - If the response includes `auth_required`, tell the user which tool needs login and call `ensure_auth` with that `tool_id`. After auth, call `generate_image_candidates` again to retry.
+   - If the response includes `auth_required`: the server has already opened the browser for that tool. Tell the user **exactly**: "[ToolName] needs you to log in. A browser window has been opened — please log in there, then tell me when you're done." Use the `auth_required.next_step` field verbatim if present. After the user confirms, call `ensure_auth` with the `tool_id` to verify, then call `generate_image_candidates` again to resume.
    - If `generate_image_candidates` times out (120s), the run continues in the background. Call `get_run` to check progress. When the user says "continue", "resume", or "keep going", call `generate_image_candidates` again — it automatically skips tools that already produced results and picks up from where it left off.
    - Only call `finalize_candidates` if the user explicitly says they want to **skip** or **stop** waiting for remaining tools. Never call it to resume.
 
@@ -220,11 +220,21 @@ After image selection:
 ## Authentication Handling
 
 If any MCP tool call fails with an auth error or returns `auth_required`:
-1. Tell the user which tool needs login and ask if they want to log in or skip it.
-2. **To log in**: Call `ensure_auth` with the `tool_id`. This is a **two-step flow** — `ensure_auth` never blocks:
-   - **First call**: Opens the browser at the tool URL and returns immediately. If `authenticated: true`, you are done — proceed to generation. If `awaiting_login: true`, tell the user the browser is open and ask them to log in, then confirm with you.
-   - **Second call** (after user says "done" / "logged in" / "I'm in"): Call `ensure_auth` again with the same `tool_id`. It will check the session and return `authenticated: true` if login succeeded. Once confirmed, call `generate_image_candidates` to resume.
+1. **Immediately tell the user** which tool needs login. Do not silently skip or proceed. Use the `next_step` field from `auth_required` verbatim if present, otherwise say: "[ToolName] needs you to log in. A browser window has been opened — please log in there, then tell me when you're done."
+2. **To log in**: `generate_image_candidates` already opens the browser when auth is needed. Wait for the user to confirm they've logged in.
+   - After the user says "done" / "logged in" / "I'm in": Call `ensure_auth` with the `tool_id` to verify. If `authenticated: true`, call `generate_image_candidates` again to resume.
+   - If `ensure_auth` returns `awaiting_login` again, the browser window is still open — ask the user to complete login and confirm again.
 3. **To skip**: If the user says "skip", "move on", "next tool", or doesn't want to log in — call `skip_tool` with the `run_id`. This marks the blocked tool as skipped and resets the stage. Then call `generate_image_candidates` to continue with the remaining tools.
+
+## CAPTCHA / Anti-Bot Handling
+
+If `auth_required` contains "CAPTCHA" or "human verification" in `reason` or `next_step`:
+1. **Immediately tell the user**: "[ToolName] is showing a human verification challenge. The browser window is still open — please complete the CAPTCHA and tell me when you're done."
+2. The browser window is **already open** (not closed). The user must complete the challenge there.
+3. After the user confirms ("done", "completed"), call `generate_image_candidates` again to resume. The tool will retry from scratch.
+4. If the user wants to skip, use `skip_tool` as with auth.
+
+**Critical**: never attempt to solve or bypass CAPTCHAs. Always ask the user to complete them manually.
 
 ---
 

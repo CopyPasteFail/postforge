@@ -6,6 +6,7 @@ import type { Locator, Page } from "playwright";
 import { imageToolConfigs } from "../../config/tools.js";
 import type { ImageAsset } from "../../pipeline/types.js";
 import { delay } from "../waits.js";
+import { AuthRequiredError, CaptchaRequiredError } from "../auth.js";
 import { GenericImageToolAdapter } from "./base.js";
 
 interface CopilotImageCandidate {
@@ -36,13 +37,66 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
     await super.fillPrompt(page, copilotPrompt);
   }
 
+  private async checkCaptcha(page: Page): Promise<void> {
+    const hasCaptcha = await page.evaluate(() => {
+      // Check for Cloudflare Turnstile iframe or widget.
+      const iframes = Array.from(document.querySelectorAll("iframe"));
+      for (const iframe of iframes) {
+        const src = (iframe.src || "").toLowerCase();
+        if (src.includes("challenges.cloudflare.com") || src.includes("turnstile") || src.includes("captcha")) {
+          return true;
+        }
+      }
+      // Check for Turnstile container elements.
+      if (document.querySelector("#cf-turnstile, [class*='turnstile'], [class*='cf-chl'], [id*='cf-chl']")) {
+        return true;
+      }
+      // Check page text for generic CAPTCHA indicators.
+      const text = document.body?.textContent?.toLowerCase() ?? "";
+      return text.includes("verify you are human")
+        || text.includes("human verification")
+        || text.includes("are you a human");
+    }).catch(() => false);
+
+    if (hasCaptcha) {
+      throw new CaptchaRequiredError({
+        toolId: this.config.id,
+        toolName: this.config.name,
+        url: page.url(),
+        reason: "Copilot is showing a human verification challenge (CAPTCHA). Please complete it in the browser and retry.",
+        requestedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  private async checkSignInModal(page: Page): Promise<void> {
+    const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
+    const normalized = bodyText.toLowerCase();
+    if (
+      normalized.includes("sign in to keep creating")
+      || normalized.includes("sign in and try again")
+      || normalized.includes("you've hit the")
+      || normalized.includes("continue with microsoft")
+    ) {
+      throw new AuthRequiredError({
+        toolId: this.config.id,
+        toolName: this.config.name,
+        url: this.config.url,
+        reason: "Copilot interrupted with a sign-in modal. Please log in and retry.",
+        requestedAt: new Date().toISOString(),
+      });
+    }
+  }
+
   protected override async waitForResultElements(page: Page, timeoutMs = 420_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let sawGenerationSignals = false;
     let stableResolvedChecks = 0;
     let lastResolvedSignature = "";
-
     while (Date.now() < deadline) {
+      await this.checkSignInModal(page);
+      await this.checkCaptcha(page);
+
       const images = await this.collectVisibleImages(page);
       const ready = images.filter((image) => !image.blurred);
       const generationSignals = await this.hasGenerationSignals(page, images);

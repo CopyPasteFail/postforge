@@ -23,6 +23,17 @@ export class AuthRequiredError extends Error {
   }
 }
 
+/** Thrown when a CAPTCHA/anti-bot challenge is detected mid-generation.
+ *  The browser window must stay open so the user can complete it. */
+export class CaptchaRequiredError extends Error {
+  public readonly checkpoint: AuthCheckpoint;
+
+  public constructor(checkpoint: AuthCheckpoint) {
+    super(`${checkpoint.toolName} requires human verification (CAPTCHA).`);
+    this.checkpoint = checkpoint;
+  }
+}
+
 export type AuthOpenResult =
   | { status: "authenticated" }
   | { status: "awaiting_login"; loginUrl: string; message: string };
@@ -66,6 +77,24 @@ export class AuthService {
     }
   }
 
+  public async waitForLoginOnPage(page: Page, config: AuthConfig, timeoutMs = 10 * 60_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    console.error(`\n[${config.name}] Not logged in. Please log in in the open browser window.\n`);
+    while (Date.now() < deadline) {
+      if (await this.isAuthenticated(page, config)) {
+        return;
+      }
+      await delay(2_000);
+    }
+    throw new AuthRequiredError({
+      toolId: config.id,
+      toolName: config.name,
+      url: config.url,
+      reason: `Login was not detected within ${Math.round(timeoutMs / 60_000)} minutes.`,
+      requestedAt: new Date().toISOString(),
+    });
+  }
+
   public async verifyPending(toolId: ToolId): Promise<void> {
     if (toolId !== "linkedin") {
       throw new Error(`verifyPending currently supports LinkedIn directly, and image tools should be resumed through their adapters: ${toolId}`);
@@ -102,12 +131,29 @@ export class AuthService {
     }
 
     // Not logged in — keep the browser open so the user can log in without reopening it.
+    // For Copilot, the main page looks identical for guests and logged-in users,
+    // so click the Sign in button to surface the login form immediately.
+    if (config.id === "copilot") {
+      const signInSelectors = [
+        "button:has-text('Sign in')",
+        "a:has-text('Sign in')",
+        "[aria-label='Sign in']",
+      ];
+      for (const selector of signInSelectors) {
+        const el = page.locator(selector).first();
+        if (await el.isVisible().catch(() => false)) {
+          await el.click().catch(() => undefined);
+          break;
+        }
+      }
+    }
+
     this.openContexts.set(key, context);
     console.error(`[auth] ${config.name} not authenticated — browser left open at ${config.url}`);
     return {
       status: "awaiting_login",
       loginUrl: config.url,
-      message: `${config.name} browser is open. Log in, then call ensure_auth again to confirm.`,
+      message: `${config.name} browser is open. Please log in, then call ensure_auth again to confirm.`,
     };
   }
 
@@ -122,6 +168,10 @@ export class AuthService {
 
     if (config.id === "grok") {
       return this.isGrokAvailable(page, config);
+    }
+
+    if (config.id === "copilot") {
+      return this.isCopilotAuthenticated(page, config);
     }
 
     const loggedOutMatch = await waitForAnySelector(page, config.loginIndicators.loggedOutSelectors, 8_000);
@@ -309,6 +359,66 @@ export class AuthService {
     }
 
     console.error(`[Flow auth] launcher did not reach a detectable workspace @ ${nextUrl}`);
+    return false;
+  }
+
+  private async isCopilotAuthenticated(page: Page, config: AuthConfig): Promise<boolean> {
+    await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+    await delay(3_000);
+
+    const url = page.url();
+    const normalizedUrl = url.toLowerCase();
+
+    if (normalizedUrl.includes("login.live.com") || normalizedUrl.includes("login.microsoftonline.com")) {
+      console.error(`[Copilot auth] redirected to Microsoft sign-in @ ${url}`);
+      return false;
+    }
+
+    const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
+    const normalized = bodyText.toLowerCase();
+
+    // Check POSITIVE indicators first — these are definitive proof of login.
+    // Must run before logged-out checks because "Sign in" buttons can briefly
+    // flash during page load even for authenticated sessions.
+    if (/\bhi\s+\w+[,!.]/i.test(bodyText) && !normalized.includes("sign in to keep creating")) {
+      console.error(`[Copilot auth] authenticated via personalized greeting in page text @ ${url}`);
+      return true;
+    }
+    if (normalized.includes("sign out")) {
+      console.error(`[Copilot auth] authenticated via "Sign out" text in page @ ${url}`);
+      return true;
+    }
+
+    const loggedInMatch = await waitForAnySelector(page, config.loginIndicators.loggedInSelectors, 5_000);
+    if (loggedInMatch) {
+      console.error(`[Copilot auth] authenticated via ${loggedInMatch} @ ${url}`);
+      return true;
+    }
+
+    // No positive indicators found — now check for logged-out signals.
+    const loggedOutVisible = await this.firstVisibleSelector(page, [
+      ...config.loginIndicators.loggedOutSelectors,
+      "button:has-text('Sign in')",
+      "a:has-text('Sign in')",
+      "[aria-label='Sign in']",
+      "[aria-label*='sign in' i]",
+    ]);
+    if (loggedOutVisible) {
+      console.error(`[Copilot auth] logged-out selector visible: ${loggedOutVisible} @ ${url}`);
+      return false;
+    }
+
+    // Check page text for guest-session indicators (e.g. the rate-limit upsell modal).
+    if (
+      normalized.includes("sign in to keep creating")
+      || normalized.includes("sign in and try again")
+      || normalized.includes("you've hit the")
+    ) {
+      console.error(`[Copilot auth] guest-session indicator in page text @ ${url}`);
+      return false;
+    }
+
+    console.error(`[Copilot auth] no definitive indicator found — treating as logged out @ ${url}`);
     return false;
   }
 }

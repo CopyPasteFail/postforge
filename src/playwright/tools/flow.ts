@@ -177,21 +177,20 @@ class FlowToolAdapter extends GenericImageToolAdapter {
     let stableChecks = 0;
 
     while (Date.now() < deadline) {
-      const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
-      const normalized = bodyText.toLowerCase();
+      const bodyText = (await page.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
       if (
-        normalized.includes("image generation request denied")
-        || normalized.includes("due to interests of third-party content providers")
-        || normalized.includes("please edit your prompt and try again")
-        || normalized.includes("i can't generate the image you requested right now")
-        || normalized.includes("this generation might violate our policies")
-        || normalized.includes("image generation failed")
-        || normalized.includes("generation failed")
-        || normalized.includes("try a different prompt or send feedback")
+        this.isNewText(bodyText, "image generation request denied")
+        || this.isNewText(bodyText, "due to interests of third-party content providers")
+        || this.isNewText(bodyText, "please edit your prompt and try again")
+        || this.isNewText(bodyText, "i can't generate the image you requested right now")
+        || this.isNewText(bodyText, "this generation might violate our policies")
+        || this.isNewText(bodyText, "image generation failed")
+        || this.isNewText(bodyText, "generation failed")
+        || this.isNewText(bodyText, "try a different prompt or send feedback")
       ) {
         throw new ToolGenerationBlockedError(
           "Image could not be produced due to a copyright or policy block from Flow.",
-          normalized.includes("third-party content") ? "copyright_block" : "policy_block",
+          bodyText.includes("third-party content") ? "copyright_block" : "policy_block",
         );
       }
 

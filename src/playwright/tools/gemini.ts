@@ -27,12 +27,11 @@ class GeminiToolAdapter extends GenericImageToolAdapter {
   protected override async waitForResultElements(page: Page, timeoutMs = 120_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
-      const normalized = bodyText.toLowerCase();
+      const bodyText = (await page.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
       if (
-        normalized.includes("image generation request denied")
-        || normalized.includes("due to interests of third-party content providers")
-        || normalized.includes("please edit your prompt and try again")
+        this.isNewText(bodyText, "image generation request denied")
+        || this.isNewText(bodyText, "due to interests of third-party content providers")
+        || this.isNewText(bodyText, "please edit your prompt and try again")
       ) {
         throw new ToolGenerationBlockedError(
           "Image could not be produced due to a copyright block from Gemini.",

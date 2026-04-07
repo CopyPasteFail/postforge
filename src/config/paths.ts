@@ -35,8 +35,10 @@ export const outputPaths = (runId: string) => ({
 });
 
 // path to bundled prompt files (resolved relative to the compiled server)
+// dist/config/paths.js → up two levels → project root → prompts/
 export const promptsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
+  "..",
   "..",
   "prompts",
 );

@@ -247,15 +247,19 @@ export const imageToolConfigs: ImageToolConfig[] = [
     setting: "Standard",
     loginIndicators: {
       loggedInSelectors: [
-        "[aria-label*='Message Copilot']",
-        "textarea[placeholder*='Message Copilot']",
-        "textarea[aria-label*='Message Copilot']",
-        "textarea",
-        "div[contenteditable='true']",
+        "button[aria-label='Account manager']",
+        "[data-testid='user-profile-button']",
+        "button:has-text('Sign out')",
+        "[aria-label*='account' i]",
+        "[aria-label*='profile' i]",
       ],
       loggedOutSelectors: [
         "button:has-text('Sign in')",
         "a[href*='login.live.com']",
+        "a[href*='login.microsoftonline.com']",
+        "button:has-text('Log in')",
+        "a:has-text('Sign in')",
+        "[aria-label='Sign in']",
       ],
     },
     promptSelectors: [
