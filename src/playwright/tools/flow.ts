@@ -5,8 +5,6 @@ import type { Download, Locator, Page } from "playwright";
 
 import { imageToolConfigs } from "../../config/tools.js";
 import type { ImageAsset, ImageAssetVariant } from "../../pipeline/types.js";
-import { AuthService } from "../auth.js";
-import { BrowserService } from "../browser.js";
 import { pathExists, writeJson } from "../../storage/fs-utils.js";
 import { delay, waitForAnySelector } from "../waits.js";
 import { GenericImageToolAdapter, ToolGenerationBlockedError } from "./base.js";
@@ -41,8 +39,6 @@ interface FlowVariantMetadata {
 const sanitizeFilename = (value: string): string => value.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-").replace(/\s+/g, " ").trim();
 
 class FlowToolAdapter extends GenericImageToolAdapter {
-  private readonly flowBrowser = new BrowserService();
-  private readonly flowAuth = new AuthService(this.flowBrowser);
   private latestVariants: ImageAssetVariant[] = [];
   private baselineSources = new Set<string>();
 
@@ -67,10 +63,10 @@ class FlowToolAdapter extends GenericImageToolAdapter {
     this.latestVariants = [];
     this.baselineSources = new Set<string>();
 
-    const { context, page } = await this.flowBrowser.launchPage(this.config.id);
+    const { context, page } = await this.launchToolPage();
     try {
       await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
-      const authenticated = await this.flowAuth.isAuthenticated(page, this.config);
+      const authenticated = await this.checkAuthenticated(page);
       if (!authenticated) {
         await context.close();
         await this.ensureAuthenticated(true);
@@ -109,9 +105,9 @@ class FlowToolAdapter extends GenericImageToolAdapter {
     ], 8_000);
 
     if (newProjectSelector) {
-      console.log(`[Flow] launcher-found: Using ${newProjectSelector}`);
+      console.error(`[Flow] launcher-found: Using ${newProjectSelector}`);
       await page.locator(newProjectSelector).first().click();
-      console.log("[Flow] launcher-clicked: Clicked New project");
+      console.error("[Flow] launcher-clicked: Clicked New project");
       await waitForAnySelector(page, this.config.promptSelectors, 20_000);
       await this.ensureGenerationSettings(page);
       await this.captureBaselineSources(page);
@@ -127,9 +123,9 @@ class FlowToolAdapter extends GenericImageToolAdapter {
       return;
     }
 
-    console.log(`[Flow] launcher-found: Using ${createWithFlowSelector}`);
+    console.error(`[Flow] launcher-found: Using ${createWithFlowSelector}`);
     await page.locator(createWithFlowSelector).first().click();
-    console.log("[Flow] launcher-clicked: Clicked Create with Flow");
+    console.error("[Flow] launcher-clicked: Clicked Create with Flow");
     await waitForAnySelector(page, this.config.promptSelectors, 20_000);
     await this.ensureGenerationSettings(page);
     await this.captureBaselineSources(page);
@@ -146,7 +142,7 @@ class FlowToolAdapter extends GenericImageToolAdapter {
       return;
     }
 
-    console.log(`[Flow] modal-found: Dismissing startup modal with ${getStartedSelector}`);
+    console.error(`[Flow] modal-found: Dismissing startup modal with ${getStartedSelector}`);
     const button = page.locator(getStartedSelector).last();
     await button.scrollIntoViewIfNeeded().catch(() => undefined);
     await button.click().catch(() => undefined);
@@ -172,7 +168,7 @@ class FlowToolAdapter extends GenericImageToolAdapter {
       throw new Error(`Could not fill the visible prompt box for ${this.config.name}.`);
     }
 
-    console.log(`[Flow] prompt-inserted: Prompt inserted into Flow textbox via keyboard input`);
+    console.error(`[Flow] prompt-inserted: Prompt inserted into Flow textbox via keyboard input`);
   }
 
   protected override async waitForResultElements(page: Page, timeoutMs = 180_000): Promise<void> {
@@ -181,20 +177,20 @@ class FlowToolAdapter extends GenericImageToolAdapter {
     let stableChecks = 0;
 
     while (Date.now() < deadline) {
-      const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
-      const normalized = bodyText.toLowerCase();
+      const bodyText = (await page.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
       if (
-        normalized.includes("image generation request denied")
-        || normalized.includes("due to interests of third-party content providers")
-        || normalized.includes("please edit your prompt and try again")
-        || normalized.includes("i can't generate the image you requested right now")
-        || normalized.includes("this generation might violate our policies")
-        || normalized.includes("failed")
-        || normalized.includes("try a different prompt or send feedback")
+        this.isNewText(bodyText, "image generation request denied")
+        || this.isNewText(bodyText, "due to interests of third-party content providers")
+        || this.isNewText(bodyText, "please edit your prompt and try again")
+        || this.isNewText(bodyText, "i can't generate the image you requested right now")
+        || this.isNewText(bodyText, "this generation might violate our policies")
+        || this.isNewText(bodyText, "image generation failed")
+        || this.isNewText(bodyText, "generation failed")
+        || this.isNewText(bodyText, "try a different prompt or send feedback")
       ) {
         throw new ToolGenerationBlockedError(
           "Image could not be produced due to a copyright or policy block from Flow.",
-          normalized.includes("third-party content") ? "copyright_block" : "policy_block",
+          bodyText.includes("third-party content") ? "copyright_block" : "policy_block",
         );
       }
 
@@ -208,7 +204,7 @@ class FlowToolAdapter extends GenericImageToolAdapter {
         stableChecks = signature === lastSignature ? stableChecks + 1 : 1;
         lastSignature = signature;
         if (stableChecks >= 2) {
-          console.log(`[Flow] result-ready: Detected ${images.length} stable generated image(s)`);
+          console.error(`[Flow] result-ready: Detected ${images.length} stable generated image(s)`);
           return;
         }
       }
@@ -216,7 +212,7 @@ class FlowToolAdapter extends GenericImageToolAdapter {
       await delay(1_500);
     }
 
-    console.log(`[Flow] result-ready-timeout: Did not detect two stable generated images within ${Math.round(timeoutMs / 1_000)}s`);
+    console.error(`[Flow] result-ready-timeout: Did not detect two stable generated images within ${Math.round(timeoutMs / 1_000)}s`);
   }
 
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
@@ -231,13 +227,13 @@ class FlowToolAdapter extends GenericImageToolAdapter {
   private async ensureGenerationSettings(page: Page): Promise<void> {
     const selectionText = await this.readSelectionSummary(page);
     if (selectionText.includes("nano banana 2") && selectionText.includes("x2")) {
-      console.log(`[Flow] settings-ready: Using remembered settings "${selectionText}"`);
+      console.error(`[Flow] settings-ready: Using remembered settings "${selectionText}"`);
       return;
     }
 
     const trigger = await this.findSettingsTrigger(page);
     if (!trigger) {
-      console.log("[Flow] settings-skip: Could not find settings trigger; using current Flow defaults");
+      console.error("[Flow] settings-skip: Could not find settings trigger; using current Flow defaults");
       return;
     }
 
@@ -267,7 +263,7 @@ class FlowToolAdapter extends GenericImageToolAdapter {
     await delay(300);
 
     const updatedSummary = await this.readSelectionSummary(page);
-    console.log(`[Flow] settings-ready: Flow selection summary is "${updatedSummary || "unknown"}"`);
+    console.error(`[Flow] settings-ready: Flow selection summary is "${updatedSummary || "unknown"}"`);
   }
 
   private async readSelectionSummary(page: Page): Promise<string> {
@@ -383,7 +379,7 @@ class FlowToolAdapter extends GenericImageToolAdapter {
 
       const tile = await this.findTileForImage(page, image);
       if (!tile) {
-        console.log(`[Flow] result-skip: Could not re-locate tile ${image.index + 1} for src ${image.src}`);
+        console.error(`[Flow] result-skip: Could not re-locate tile ${image.index + 1} for src ${image.src}`);
         continue;
       }
 
@@ -400,7 +396,7 @@ class FlowToolAdapter extends GenericImageToolAdapter {
       if (variant) {
         savedFiles.push(variant.filePath);
         this.latestVariants.push(variant.assetVariant);
-        console.log(`[Flow] result-saved: Downloaded ${downloadKind} artifact ${variant.filePath}`);
+        console.error(`[Flow] result-saved: Downloaded ${downloadKind} artifact ${variant.filePath}`);
       }
     }
 

@@ -5,15 +5,11 @@ import type { Download, Locator, Page } from "playwright";
 
 import { imageToolConfigs } from "../../config/tools.js";
 import type { ImageAsset } from "../../pipeline/types.js";
-import { AuthService } from "../auth.js";
-import { BrowserService } from "../browser.js";
 import { delay, waitForAnySelector } from "../waits.js";
 import { GenericImageToolAdapter, ToolGenerationBlockedError } from "./base.js";
 
 class AiStudioToolAdapter extends GenericImageToolAdapter {
   private static readonly imageGenerationUrl = "https://aistudio.google.com/prompts/new_chat";
-  private readonly aiStudioBrowser = new BrowserService();
-  private readonly aiStudioAuth = new AuthService(this.aiStudioBrowser);
 
   protected override async configureMode(page: Page): Promise<void> {
     await this.openImageGeneration(page);
@@ -23,12 +19,12 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
   public async downloadFromPromptUrl(runId: string, promptUrl: string, outputDir: string): Promise<ImageAsset> {
     await fs.mkdir(outputDir, { recursive: true });
 
-    const { context, page } = await this.aiStudioBrowser.launchPage(this.config.id);
+    const { context, page } = await this.launchToolPage();
     try {
-      console.log(`[${this.config.name}] navigating: Opening saved prompt ${promptUrl}`);
+      console.error(`[${this.config.name}] navigating: Opening saved prompt ${promptUrl}`);
       await page.goto(promptUrl, { waitUntil: "domcontentloaded" });
 
-      const isLoggedIn = await this.aiStudioAuth.isAuthenticated(page, this.config);
+      const isLoggedIn = await this.checkAuthenticated(page);
       if (!isLoggedIn) {
         await context.close();
         await this.ensureAuthenticated(true);
@@ -58,7 +54,7 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
     const downloaded = await this.downloadGeneratedImage(page, outputDir);
     if (downloaded) {
-      console.log(`[${this.config.name}] result-saved: Downloaded full-size image artifact ${downloaded}`);
+      console.error(`[${this.config.name}] result-saved: Downloaded full-size image artifact ${downloaded}`);
       return [downloaded];
     }
 
@@ -66,10 +62,13 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
   }
 
   protected override async waitForResultElements(page: Page, timeoutMs = 120_000): Promise<void> {
-    let rerunAttempted = false;
+    let rerunAttempts = 0;
+    const maxReruns = 3;
+    const effectiveTimeout = Math.max(timeoutMs, 180_000);
+
     const runButton = await this.findRunButton(page);
     if (runButton) {
-      await this.waitForRunCycle(runButton, Math.max(timeoutMs, 180_000));
+      await this.waitForRunCycle(runButton, effectiveTimeout);
       await this.scrollToBottom(page);
       if (await this.isContentBlocked(page)) {
         throw new ToolGenerationBlockedError(
@@ -81,13 +80,13 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
         return;
       }
 
-      if (!rerunAttempted && await this.tryRerunTurn(page)) {
-        rerunAttempted = true;
+      if (rerunAttempts < maxReruns && await this.tryRerunTurn(page)) {
+        rerunAttempts++;
         await delay(2_000);
       }
     }
 
-    const deadline = Date.now() + Math.max(timeoutMs, 180_000);
+    const deadline = Date.now() + effectiveTimeout;
     while (Date.now() < deadline) {
       await this.scrollToBottom(page);
 
@@ -98,13 +97,22 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
         );
       }
 
+      if (await this.hasTransientError(page) && rerunAttempts < maxReruns) {
+        console.error(`[${this.config.name}] transient-error: Detected transient failure, attempting rerun (${rerunAttempts + 1}/${maxReruns})`);
+        if (await this.tryRerunTurn(page)) {
+          rerunAttempts++;
+          await delay(3_000);
+          continue;
+        }
+      }
+
       await super.waitForResultElements(page, 8_000);
       if (await this.findGeneratedImage(page)) {
         return;
       }
 
-      if (!rerunAttempted && await this.tryRerunTurn(page)) {
-        rerunAttempted = true;
+      if (rerunAttempts < maxReruns && await this.tryRerunTurn(page)) {
+        rerunAttempts++;
         await delay(2_000);
       }
     }
@@ -414,8 +422,53 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
     return downloadPromise;
   }
 
+  private async hasTransientError(page: Page): Promise<boolean> {
+    const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
+    const normalized = bodyText.toLowerCase();
+    return normalized.includes("an internal error has occurred")
+      || normalized.includes("failed to generate content: permission denied")
+      || normalized.includes("permission denied")
+      || normalized.includes("something went wrong. please try again")
+      || normalized.includes("unable to process your request");
+  }
+
+  private async hoverLastModelResponse(page: Page): Promise<void> {
+    const selectors = [
+      "ms-chat-turn",
+      "[class*='chat-turn']",
+      "[class*='model-response']",
+      "[class*='response-container']",
+      "[class*='conversation-turn']",
+      "[data-message-role='model']",
+      "[data-turn]",
+    ];
+
+    for (const selector of selectors) {
+      const elements = page.locator(selector);
+      const count = await elements.count().catch(() => 0);
+      if (count > 0) {
+        const last = elements.last();
+        if (await last.isVisible().catch(() => false)) {
+          await last.hover().catch(() => undefined);
+          return;
+        }
+      }
+    }
+
+    // Fallback: move the mouse to the lower-center of the viewport to trigger
+    // hover-reveal on whichever response is visible at the bottom of the page.
+    const viewport = page.viewportSize();
+    if (viewport) {
+      await page.mouse.move(viewport.width * 0.5, viewport.height * 0.65).catch(() => undefined);
+    }
+  }
+
   private async tryRerunTurn(page: Page): Promise<boolean> {
-    const directSelectors = [
+    await this.hoverLastModelResponse(page);
+    await delay(1_000);
+
+    const rerunSelectors = [
+      "button[aria-label='Rerun this turn']",
       "button[aria-label*='Rerun this turn']",
       "button[aria-label*='Rerun']",
       "button[title*='Rerun this turn']",
@@ -424,7 +477,7 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       "button:has-text('Rerun')",
     ];
 
-    for (const selector of directSelectors) {
+    for (const selector of rerunSelectors) {
       const button = page.locator(selector).first();
       if (await button.isVisible().catch(() => false)) {
         await button.click().catch(() => undefined);
@@ -433,11 +486,33 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       }
     }
 
+    // Angular Material hides action buttons behind CSS opacity/visibility until
+    // hover — use JS to find and click the rerun button regardless of visual state.
+    const clicked = await page.evaluate(() => {
+      const allButtons = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']"));
+      for (const el of allButtons) {
+        const label = (el.getAttribute("aria-label") ?? "").toLowerCase();
+        const title = (el.getAttribute("title") ?? "").toLowerCase();
+        const text = (el.textContent ?? "").toLowerCase().trim();
+        if (label.includes("rerun") || title.includes("rerun") || text === "rerun this turn") {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    }).catch(() => false);
+
+    if (clicked) {
+      await delay(1_500);
+      return true;
+    }
+
+    // Try overflow menu: look for a "More options"-style button near the response.
     const overflowButton = page.locator([
-      "button[aria-label*='More']",
-      "button[aria-label*='more']",
+      "button[aria-label*='More options']",
+      "button[aria-label*='More actions']",
       "button[aria-label='Open menu']",
-      "button:has(svg)",
+      "button[aria-label*='more' i]",
     ].join(", ")).last();
 
     if (!(await overflowButton.isVisible().catch(() => false))) {
@@ -445,7 +520,7 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
     }
 
     await overflowButton.click().catch(() => undefined);
-    await delay(500);
+    await delay(600);
 
     for (const selector of [
       "[role='menuitem']:has-text('Rerun this turn')",

@@ -44,7 +44,7 @@ export class LinkedInAdapter {
       await this.reachFinalComposer(page, imagePath);
       await this.fillText(page, postText);
       await this.saveDraft(page);
-      console.log("\nLinkedIn draft saved.\n");
+      console.error("\nLinkedIn draft saved.\n");
     } finally {
       await context.close();
     }
@@ -74,7 +74,7 @@ export class LinkedInAdapter {
       await this.reachTextComposer(page);
       await this.fillText(page, postText);
       await this.saveDraft(page);
-      console.log("\nLinkedIn text draft saved.\n");
+      console.error("\nLinkedIn text draft saved.\n");
     } finally {
       await context.close();
     }

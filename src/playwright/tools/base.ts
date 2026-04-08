@@ -9,7 +9,7 @@ import type { ImageAsset } from "../../pipeline/types.js";
 import { waitForConfirmation } from "../../pipeline/manual.js";
 import { delay, waitForAnySelector, waitForBusyToSettle } from "../waits.js";
 import { BrowserService } from "../browser.js";
-import { AuthRequiredError, AuthService } from "../auth.js";
+import { AuthRequiredError, CaptchaRequiredError, AuthService } from "../auth.js";
 
 export interface ToolAdapter {
   readonly config: ImageToolConfig;
@@ -44,18 +44,38 @@ interface ResultCandidate {
 }
 
 export class GenericImageToolAdapter implements ToolAdapter {
+  /** Page body text captured right after prompt submission, before generation starts.
+   *  Subclasses use `isNewText()` to avoid false-positive block detection from old conversations. */
+  protected preSubmitBodyText = "";
+
+  /** When true, the browser window is kept open after generate() exits (e.g. for CAPTCHA). */
+  private _keepBrowserOpen = false;
+
   public constructor(
     public readonly config: ImageToolConfig,
-    private readonly browser = new BrowserService(),
-    private readonly auth = new AuthService(),
+    protected readonly browser = new BrowserService(),
+    protected readonly auth = new AuthService(),
   ) {}
+
+  /** Returns true if `phrase` appears in `currentBodyText` but was NOT in the pre-submit baseline. */
+  protected isNewText(currentBodyText: string, phrase: string): boolean {
+    return currentBodyText.includes(phrase) && !this.preSubmitBodyText.includes(phrase);
+  }
 
   public async ensureAuthenticated(interactive = true): Promise<void> {
     await this.auth.ensureAuthenticated(this.config, interactive);
   }
 
+  protected async launchToolPage(): Promise<{ context: import("playwright").BrowserContext; page: Page }> {
+    return this.browser.launchPage(this.config.id, this.config.profileId);
+  }
+
+  protected async checkAuthenticated(page: Page): Promise<boolean> {
+    return this.auth.isAuthenticated(page, this.config);
+  }
+
   public async testPromptInsertion(promptText: string, keepOpen = true): Promise<void> {
-    const context = await this.browser.launchPersistent(this.config.id);
+    const context = await this.browser.launchPersistent(this.config.id, this.config.profileId);
     const page = await context.newPage();
     try {
       this.logStep("navigating", `Opening ${this.config.url}`);
@@ -98,26 +118,36 @@ export class GenericImageToolAdapter implements ToolAdapter {
   public async generate(runId: string, promptText: string, outputDir: string, interactive = true): Promise<ImageAsset> {
     await fs.mkdir(outputDir, { recursive: true });
 
-    const { context, page } = await this.browser.launchPage(this.config.id);
+    const { context, page } = await this.browser.launchPage(this.config.id, this.config.profileId);
     try {
-      this.logStep("navigating", `Opening ${this.config.url}`);
-      await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
+      // launchPage() already navigates to the tool URL for a fresh page.
+      // Only re-navigate if we ended up somewhere else (e.g. a cached page at a different URL).
+      const currentUrl = page.url().trim().toLowerCase();
+      const targetOrigin = new URL(this.config.url).origin.toLowerCase();
+      const alreadyThere = currentUrl && currentUrl !== "about:blank" && currentUrl.startsWith(targetOrigin);
+      if (!alreadyThere) {
+        this.logStep("navigating", `Opening ${this.config.url}`);
+        await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
+      } else {
+        this.logStep("navigating", `Already at ${page.url()} — skipping redundant navigation`);
+      }
 
       const isLoggedIn = await this.auth.isAuthenticated(page, this.config);
       if (!isLoggedIn) {
-        if (interactive) {
-          await context.close();
-          await this.ensureAuthenticated(true);
-          return this.generate(runId, promptText, outputDir, false);
+        if (!interactive) {
+          throw new AuthRequiredError({
+            toolId: this.config.id,
+            toolName: this.config.name,
+            url: this.config.url,
+            reason: "Authentication is required before image generation.",
+            requestedAt: new Date().toISOString(),
+          });
         }
 
-        throw new AuthRequiredError({
-          toolId: this.config.id,
-          toolName: this.config.name,
-          url: this.config.url,
-          reason: "Authentication is required before image generation.",
-          requestedAt: new Date().toISOString(),
-        });
+        // Keep the same window open — no close/reopen cycle.
+        this.logStep("auth-required", `Not logged in to ${this.config.name}. Waiting for login in the open browser window.`);
+        await this.auth.waitForLoginOnPage(page, this.config);
+        await page.goto(this.config.url, { waitUntil: "domcontentloaded" });
       }
 
       this.logStep("authenticated", `Confirmed logged-in session at ${page.url()}`);
@@ -127,6 +157,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
       await this.fillPrompt(page, promptText);
       this.logStep("submit-search", "Looking for a submit control");
       await this.submit(page);
+      this.preSubmitBodyText = (await page.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
       this.logStep("waiting-for-result", "Waiting for busy indicators to settle");
       await waitForBusyToSettle(page, this.config.busySelectors, 90_000).catch(() => undefined);
       await this.waitForResultElements(page);
@@ -138,6 +169,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
       this.logStep("result-capture", "Capturing generated result elements");
       const files = await this.captureResultElements(page, outputDir);
       this.logStep("result-capture-done", `Captured ${files.length} artifact(s)`);
+
       return {
         id: `${runId}:${this.config.id}`,
         toolId: this.config.id,
@@ -149,9 +181,30 @@ export class GenericImageToolAdapter implements ToolAdapter {
           ? `${this.config.name} completed with ${files.length} captured artifact(s).`
           : `${this.config.name} completed but no result elements were captured automatically. Review the page screenshot and tune selectors if needed.`,
       };
+    } catch (error) {
+      if (error instanceof CaptchaRequiredError) {
+        this._keepBrowserOpen = true;
+        this.logStep("captcha-keep-open", "CAPTCHA detected — browser stays open for user to complete it.");
+      }
+      throw error;
     } finally {
-      await context.close();
+      if (!this._keepBrowserOpen) {
+        await this.reviewPause();
+        await context.close().catch(() => undefined);
+      }
+      this._keepBrowserOpen = false;
     }
+  }
+
+  private async reviewPause(): Promise<void> {
+    const raw = process.env["IMAGE_TOOL_REVIEW_DELAY_MS"];
+    const ms = raw ? Number.parseInt(raw, 10) : 0;
+    if (!ms || Number.isNaN(ms)) {
+      return;
+    }
+
+    this.logStep("review-pause", `Keeping browser open for ${ms}ms for review (IMAGE_TOOL_REVIEW_DELAY_MS=${ms})`);
+    await delay(ms);
   }
 
   protected async configureMode(_page: Page): Promise<void> {
@@ -521,7 +574,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
   }
 
   private logStep(step: string, detail: string): void {
-    console.log(`[${this.config.name}] ${step}: ${detail}`);
+    console.error(`[${this.config.name}] ${step}: ${detail}`);
   }
 
   private async pickBestPromptLocator(page: Page): Promise<Locator | undefined> {

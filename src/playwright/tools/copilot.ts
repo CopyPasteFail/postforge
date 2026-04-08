@@ -6,6 +6,7 @@ import type { Locator, Page } from "playwright";
 import { imageToolConfigs } from "../../config/tools.js";
 import type { ImageAsset } from "../../pipeline/types.js";
 import { delay } from "../waits.js";
+import { AuthRequiredError, CaptchaRequiredError } from "../auth.js";
 import { GenericImageToolAdapter } from "./base.js";
 
 interface CopilotImageCandidate {
@@ -36,13 +37,66 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
     await super.fillPrompt(page, copilotPrompt);
   }
 
+  private async checkCaptcha(page: Page): Promise<void> {
+    const hasCaptcha = await page.evaluate(() => {
+      // Check for Cloudflare Turnstile iframe or widget.
+      const iframes = Array.from(document.querySelectorAll("iframe"));
+      for (const iframe of iframes) {
+        const src = (iframe.src || "").toLowerCase();
+        if (src.includes("challenges.cloudflare.com") || src.includes("turnstile") || src.includes("captcha")) {
+          return true;
+        }
+      }
+      // Check for Turnstile container elements.
+      if (document.querySelector("#cf-turnstile, [class*='turnstile'], [class*='cf-chl'], [id*='cf-chl']")) {
+        return true;
+      }
+      // Check page text for generic CAPTCHA indicators.
+      const text = document.body?.textContent?.toLowerCase() ?? "";
+      return text.includes("verify you are human")
+        || text.includes("human verification")
+        || text.includes("are you a human");
+    }).catch(() => false);
+
+    if (hasCaptcha) {
+      throw new CaptchaRequiredError({
+        toolId: this.config.id,
+        toolName: this.config.name,
+        url: page.url(),
+        reason: "Copilot is showing a human verification challenge (CAPTCHA). Please complete it in the browser and retry.",
+        requestedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  private async checkSignInModal(page: Page): Promise<void> {
+    const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
+    const normalized = bodyText.toLowerCase();
+    if (
+      normalized.includes("sign in to keep creating")
+      || normalized.includes("sign in and try again")
+      || normalized.includes("you've hit the")
+      || normalized.includes("continue with microsoft")
+    ) {
+      throw new AuthRequiredError({
+        toolId: this.config.id,
+        toolName: this.config.name,
+        url: this.config.url,
+        reason: "Copilot interrupted with a sign-in modal. Please log in and retry.",
+        requestedAt: new Date().toISOString(),
+      });
+    }
+  }
+
   protected override async waitForResultElements(page: Page, timeoutMs = 420_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let sawGenerationSignals = false;
     let stableResolvedChecks = 0;
     let lastResolvedSignature = "";
-
     while (Date.now() < deadline) {
+      await this.checkSignInModal(page);
+      await this.checkCaptcha(page);
+
       const images = await this.collectVisibleImages(page);
       const ready = images.filter((image) => !image.blurred);
       const generationSignals = await this.hasGenerationSignals(page, images);
@@ -52,7 +106,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
       if (generationSignals) {
         sawGenerationSignals = true;
       } else if (explicitReady && sawGenerationSignals) {
-        console.log("[Copilot] result-ready: Copilot reported that the illustration is ready");
+        console.error("[Copilot] result-ready: Copilot reported that the illustration is ready");
         return;
       } else if (sawGenerationSignals && ready.length > 0) {
         const signature = ready
@@ -61,7 +115,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
         stableResolvedChecks = signature === lastResolvedSignature ? stableResolvedChecks + 1 : 1;
         lastResolvedSignature = signature;
         if (stableResolvedChecks >= 2) {
-          console.log(`[Copilot] result-ready: Detected ${ready.length} resolved image candidate(s) after generation finished`);
+          console.error(`[Copilot] result-ready: Detected ${ready.length} resolved image candidate(s) after generation finished`);
           return;
         }
       }
@@ -69,7 +123,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
       await delay(1_500);
     }
 
-    console.log(`[Copilot] result-ready-timeout: Copilot did not produce a resolved image within ${Math.round(timeoutMs / 1_000)}s`);
+    console.error(`[Copilot] result-ready-timeout: Copilot did not produce a resolved image within ${Math.round(timeoutMs / 1_000)}s`);
   }
 
   private async hasGenerationSignals(page: Page, images: CopilotImageCandidate[]): Promise<boolean> {
@@ -110,7 +164,7 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
     const locator = page.locator("img").nth(target.index);
     const downloaded = await this.downloadResolvedImageCandidate(locator, path.join(outputDir, "copilot-result-1"));
     if (downloaded) {
-      console.log(`[Copilot] result-saved: Downloaded resolved image artifact ${downloaded}`);
+      console.error(`[Copilot] result-saved: Downloaded resolved image artifact ${downloaded}`);
       return [downloaded];
     }
 

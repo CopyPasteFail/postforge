@@ -7,13 +7,14 @@ import type {
   PipelineInput,
   RunRecord,
 } from "./pipeline/types.js";
+import type { ToolId } from "./config/tools.js";
 import { inferStartInput } from "./source/parser.js";
 import { ArticleSourceService } from "./source/article-source.js";
 import { AssetStore } from "./storage/assets.js";
 import { StateStore } from "./storage/state-store.js";
 import { ImageRunnerAgent } from "./agents/image-runner.js";
 import { LinkedInPreparerAgent } from "./agents/linkedin-preparer.js";
-import { AuthRequiredError } from "./playwright/auth.js";
+import { AuthRequiredError, CaptchaRequiredError } from "./playwright/auth.js";
 
 const INACCESSIBLE_FALLBACK = "I can't access enough of that link to use it reliably. Please paste the exact article title and the relevant article text, and I'll draft from that only.";
 
@@ -109,7 +110,7 @@ export class OrchestratorAgent {
         draft.events.push(this.state.event("awaiting_image_selection", "Image generation completed."));
       });
     } catch (error) {
-      if (error instanceof AuthRequiredError) {
+      if (error instanceof AuthRequiredError || error instanceof CaptchaRequiredError) {
         return this.state.update(runId, (draft) => {
           draft.pendingAuth = error.checkpoint;
           draft.activeToolId = error.checkpoint.toolId;
@@ -121,6 +122,32 @@ export class OrchestratorAgent {
 
       throw error;
     }
+  }
+
+  public async clearToolAsset(runId: string, toolId: string): Promise<RunRecord> {
+    return this.state.update(runId, (draft) => {
+      const index = draft.imageAssets.findIndex((a) => a.toolId === toolId);
+      if (index < 0) throw new Error(`No asset found for tool: ${toolId}`);
+      draft.imageAssets.splice(index, 1);
+      draft.events.push(this.state.event(draft.stage, `${toolId} result cleared for retry.`));
+    });
+  }
+
+  public async finalizeCandidates(runId: string): Promise<RunRecord> {
+    const run = await this.state.load(runId);
+    if (run.stage !== "generating_images" && run.stage !== "awaiting_auth") {
+      throw new Error(`Cannot finalize candidates from stage: ${run.stage}`);
+    }
+    if (run.imageAssets.length === 0) {
+      throw new Error("No image candidates have been generated yet.");
+    }
+    return this.state.update(runId, (draft) => {
+      draft.pendingAuth = undefined;
+      draft.activeToolId = undefined;
+      draft.activeToolName = undefined;
+      draft.stage = "awaiting_image_selection";
+      draft.events.push(this.state.event("awaiting_image_selection", "Image generation finalized early by user request."));
+    });
   }
 
   public async resumeAfterAuth(runId: string): Promise<RunRecord> {
@@ -142,11 +169,51 @@ export class OrchestratorAgent {
       throw new Error("Run has no pending auth checkpoint.");
     }
 
+    return this.skipTool(runId, run.pendingAuth.toolId, `${run.pendingAuth.toolName} skipped by user (no login).`);
+  }
+
+  public async skipTool(runId: string, toolId: string, reason?: string): Promise<RunRecord> {
+    const run = await this.state.load(runId);
+    const toolName = this.resolveToolName(toolId);
+    const skipReason = reason ?? `${toolName} skipped by user.`;
+
+    const skippedAsset = {
+      id: `${runId}:${toolId}`,
+      toolId: toolId as ToolId,
+      toolName,
+      status: "warning" as const,
+      files: [] as string[],
+      notes: skipReason,
+    };
+    const metadataPath = await this.assets.writeAssetMetadata(runId, skippedAsset);
+
     return this.state.update(runId, (draft) => {
-      draft.events.push(this.state.event("awaiting_image_generation", `Manual auth override accepted for ${draft.pendingAuth?.toolName ?? "tool"}.`));
-      draft.pendingAuth = undefined;
+      const existing = draft.imageAssets.findIndex((a) => a.id === skippedAsset.id);
+      if (existing >= 0) {
+        draft.imageAssets[existing] = { ...skippedAsset, metadataPath };
+      } else {
+        draft.imageAssets.push({ ...skippedAsset, metadataPath });
+      }
+      draft.events.push(this.state.event("awaiting_image_generation", `${toolName} skipped by user.`));
+      if (draft.pendingAuth?.toolId === toolId) {
+        draft.pendingAuth = undefined;
+      }
+      draft.activeToolId = undefined;
+      draft.activeToolName = undefined;
       draft.stage = "awaiting_image_generation";
     });
+  }
+
+  private resolveToolName(toolId: string): string {
+    const names: Record<string, string> = {
+      chatgpt: "ChatGPT",
+      gemini: "Gemini",
+      "ai-studio": "AI Studio",
+      flow: "Flow",
+      grok: "Grok",
+      copilot: "Copilot",
+    };
+    return names[toolId] ?? toolId;
   }
 
   public async pickImage(runId: string, assetId: string, variantId?: string): Promise<RunRecord> {

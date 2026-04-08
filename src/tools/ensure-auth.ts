@@ -13,7 +13,13 @@ export const registerEnsureAuth = (server: McpServer): void => {
 
   server.tool(
     "ensure_auth",
-    "Ensure authentication for a specific tool. Opens the tool's website in a persistent Playwright browser and waits for the user to log in if needed. Blocks while waiting for login (up to 10 minutes).",
+    [
+      "Check and open authentication for a specific tool.",
+      "Opens the tool's website in a persistent Playwright browser and checks immediately.",
+      "If already logged in, returns authenticated:true right away.",
+      "If not logged in, opens the browser window for the user to log in and returns awaiting_login — call ensure_auth again once the user confirms they have logged in.",
+      "Never blocks waiting for login.",
+    ].join(" "),
     schema.shape,
     async (params) => {
       const input = schema.parse(params);
@@ -39,17 +45,38 @@ export const registerEnsureAuth = (server: McpServer): void => {
       }
 
       try {
-        await auth.ensureAuthenticated(config, true);
+        const result = await auth.openAndCheckAuth(config);
+
+        if (result.status === "authenticated") {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              run_id: "n/a",
+              stage: "n/a",
+              allowed_actions: [],
+              idempotent: true,
+              data: {
+                authenticated: true,
+                tool_id: toolId,
+                tool_name: config.name,
+              },
+            }) }],
+          };
+        }
+
+        // Browser is open, waiting for user to log in and call again.
         return {
           content: [{ type: "text" as const, text: JSON.stringify({
             run_id: "n/a",
             stage: "n/a",
-            allowed_actions: [],
-            idempotent: true,
+            allowed_actions: ["ensure_auth"],
+            idempotent: false,
             data: {
-              authenticated: true,
+              authenticated: false,
+              awaiting_login: true,
               tool_id: toolId,
               tool_name: config.name,
+              login_url: result.loginUrl,
+              next_step: result.message,
             },
           }) }],
         };

@@ -88,6 +88,7 @@ Write the post as plain prose in this exact flow:
 - Length should fit content: technical/architectural/systems topics can be longer; opinion/observation/narrative should stay tighter.
 - Longer posts must still be skimmable.
 - Never be long without a reason.
+- Do not end paragraphs with periods.
 
 ### Closing Line Rules
 - Do not force a question.
@@ -154,6 +155,7 @@ If the user selects a comic style:
 - When the selected comic is a known franchise, include canon characters, named settings, signature props, and recognizable world details where appropriate.
 - Use that comic's typical humor, composition, and world logic so the scene feels native to that universe.
 - Do not mix styles or add external characters.
+- Match that comic's typical humor and composition.
 
 ### Image Mode Flow
 
@@ -195,10 +197,13 @@ When the user confirms the prompt, use the MCP tools to hand off to the browser 
 3. Call `generate_image_candidates` with the `run_id`.
    - This is a long-running operation. The MCP server opens Playwright browsers, navigates to each enabled AI tool (ChatGPT, Gemini, AI Studio, Flow, Grok, Copilot), pastes the prompt, waits for generation, and captures the results.
    - The response contains a `candidates` array with numbered entries, each showing `tool_id`, `tool_name`, `status`, and `file_path`.
-   - If the response includes `auth_required`, tell the user which tool needs login and call `ensure_auth` with that `tool_id`. After auth, call `generate_image_candidates` again to retry.
+   - If the response includes `auth_required`: the server has already opened the browser for that tool. Tell the user **exactly**: "[ToolName] needs you to log in. A browser window has been opened — please log in there, then tell me when you're done." Use the `auth_required.next_step` field verbatim if present. After the user confirms, call `ensure_auth` with the `tool_id` to verify, then call `generate_image_candidates` again to resume.
+   - If `generate_image_candidates` times out (120s), the run continues in the background. Call `get_run` to check progress. When the user says "continue", "resume", or "keep going", call `generate_image_candidates` again — it automatically skips tools that already produced results and picks up from where it left off.
+   - Only call `finalize_candidates` if the user explicitly says they want to **skip** or **stop** waiting for remaining tools. Never call it to resume.
 
 4. Present the candidates to the user. For each candidate, show: number, tool name, status.
-   - If a `review_page_path` is returned, mention it so the user can open it to compare images visually.
+   - If a `review_page_path` is returned, tell the user to open that file to compare images visually — images cannot be rendered inline in this chat.
+   - If no `review_page_path`, tell the user the file paths so they can open the images directly.
    - Ask: "Which image do you want to use? Pick a number."
 
 **Step 6: Select the image**
@@ -221,10 +226,21 @@ After image selection:
 ## Authentication Handling
 
 If any MCP tool call fails with an auth error or returns `auth_required`:
-1. Tell the user which tool needs login.
-2. Call `ensure_auth` with the `tool_id` (e.g., "chatgpt", "linkedin", "gemini", "ai-studio", "flow", "grok", "copilot").
-3. This opens the tool's website in a Playwright browser. The user logs in manually. The session is saved to a persistent profile.
-4. After auth succeeds, retry the original operation.
+1. **Immediately tell the user** which tool needs login. Do not silently skip or proceed. Use the `next_step` field from `auth_required` verbatim if present, otherwise say: "[ToolName] needs you to log in. A browser window has been opened — please log in there, then tell me when you're done."
+2. **To log in**: `generate_image_candidates` already opens the browser when auth is needed. Wait for the user to confirm they've logged in.
+   - After the user says "done" / "logged in" / "I'm in": Call `ensure_auth` with the `tool_id` to verify. If `authenticated: true`, call `generate_image_candidates` again to resume.
+   - If `ensure_auth` returns `awaiting_login` again, the browser window is still open — ask the user to complete login and confirm again.
+3. **To skip**: If the user says "skip", "move on", "next tool", or doesn't want to log in — call `skip_tool` with the `run_id`. This marks the blocked tool as skipped and resets the stage. Then call `generate_image_candidates` to continue with the remaining tools.
+
+## CAPTCHA / Anti-Bot Handling
+
+If `auth_required` contains "CAPTCHA" or "human verification" in `reason` or `next_step`:
+1. **Immediately tell the user**: "[ToolName] is showing a human verification challenge. The browser window is still open — please complete the CAPTCHA and tell me when you're done."
+2. The browser window is **already open** (not closed). The user must complete the challenge there.
+3. After the user confirms ("done", "completed"), call `generate_image_candidates` again to resume. The tool will retry from scratch.
+4. If the user wants to skip, use `skip_tool` as with auth.
+
+**Critical**: never attempt to solve or bypass CAPTCHAs. Always ask the user to complete them manually.
 
 ---
 
