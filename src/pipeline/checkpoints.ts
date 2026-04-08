@@ -1,5 +1,10 @@
 import type { RunRecord } from "./types.js";
 
+const isCaptchaCheckpoint = (reason?: string): boolean => {
+  const normalized = reason?.toLowerCase() ?? "";
+  return normalized.includes("captcha") || normalized.includes("human verification");
+};
+
 export const summarizeNextAction = (run: RunRecord): string => {
   switch (run.stage) {
     case "awaiting_content_approval":
@@ -21,8 +26,14 @@ export const summarizeNextAction = (run: RunRecord): string => {
     case "generating_images":
       return `Image generation is in progress${run.activeToolName ? ` on ${run.activeToolName}` : ""}.`;
     case "awaiting_auth":
+      if (isCaptchaCheckpoint(run.pendingAuth?.reason)) {
+        return `Complete the ${run.pendingAuth?.toolName ?? "pending tool"} human verification challenge in the browser, then call generate_image_candidates to resume.`;
+      }
       return `Complete login for ${run.pendingAuth?.toolName ?? "the pending tool"} via ensure_auth, then retry generate_image_candidates.`;
     case "awaiting_auth_confirmation":
+      if (isCaptchaCheckpoint(run.pendingAuth?.reason)) {
+        return `Complete the ${run.pendingAuth?.toolName ?? "pending tool"} human verification challenge in the browser, then call generate_image_candidates to resume.`;
+      }
       return `Complete login for ${run.pendingAuth?.toolName ?? "the pending tool"} via ensure_auth, then retry.`;
     case "awaiting_image_selection":
       return "Choose an image with select_image_candidate.";

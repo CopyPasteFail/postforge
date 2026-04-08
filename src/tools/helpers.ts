@@ -6,6 +6,11 @@ import type { PipelineInput, RunRecord, RunStage } from "../pipeline/types.js";
 import { pathExists, readJson, writeJson } from "../storage/fs-utils.js";
 
 const TERMINAL_STAGES: RunStage[] = ["ready_to_post", "failed", "archived"];
+const AUTH_STAGES: RunStage[] = ["awaiting_auth", "awaiting_auth_confirmation"];
+const isCaptchaCheckpoint = (reason?: string): boolean => {
+  const normalized = reason?.toLowerCase() ?? "";
+  return normalized.includes("captcha") || normalized.includes("human verification");
+};
 
 export const allowedActionsForStage = (stage: RunStage): string[] => {
   switch (stage) {
@@ -24,7 +29,7 @@ export const allowedActionsForStage = (stage: RunStage): string[] => {
       return ["finalize_candidates", "get_run", "cancel_run"];
     case "awaiting_auth":
     case "awaiting_auth_confirmation":
-      return ["ensure_auth", "skip_tool", "get_run", "cancel_run"];
+      return ["ensure_auth", "generate_image_candidates", "skip_tool", "get_run", "cancel_run"];
     case "awaiting_image_selection":
       return ["select_image_candidate", "generate_image_candidates", "retry_tool", "submit_approved_copy", "get_run", "cancel_run"];
     case "ready_for_linkedin":
@@ -38,6 +43,17 @@ export const allowedActionsForStage = (stage: RunStage): string[] => {
     default:
       return ["get_run", "cancel_run"];
   }
+};
+
+export const extractReviewPagePath = (run: RunRecord): string | undefined => {
+  const note = run.notes.find((entry) => entry.startsWith("Image review file:"));
+  if (!note) {
+    return undefined;
+  }
+
+  const [, reviewPath] = note.split(/Image review file:\s*/, 2);
+  const trimmed = reviewPath?.trim();
+  return trimmed ? trimmed : undefined;
 };
 
 const normalizeSource = (input: PipelineInput): string => {
@@ -158,9 +174,48 @@ export const purgeExpiredRuns = async (): Promise<void> => {
   }
 };
 
-// Stages that require a live browser process — reset to awaiting_image_generation on startup
-// because any browser from a previous server process is gone.
-const ZOMBIE_STAGES: RunStage[] = ["generating_images", "awaiting_auth", "awaiting_auth_confirmation"];
+// Stages that may be left mid-flight when the server exits unexpectedly.
+const ZOMBIE_STAGES: RunStage[] = ["generating_images", ...AUTH_STAGES];
+
+export const recoverInterruptedRun = (run: RunRecord, now = new Date().toISOString()): boolean => {
+  if (!ZOMBIE_STAGES.includes(run.stage)) {
+    return false;
+  }
+
+  if (AUTH_STAGES.includes(run.stage)) {
+    if (!run.pendingAuth) {
+      run.stage = "awaiting_image_generation";
+      run.activeToolId = undefined;
+      run.activeToolName = undefined;
+      run.updatedAt = now;
+      run.events.push({
+        at: now,
+        stage: "awaiting_image_generation",
+        message: "Server restarted while waiting for authentication, but the checkpoint details were missing. Image generation reset for retry.",
+      });
+      return true;
+    }
+
+    run.stage = "awaiting_auth";
+    run.activeToolId = run.pendingAuth.toolId;
+    run.activeToolName = run.pendingAuth.toolName;
+    run.updatedAt = now;
+    run.events.push({
+      at: now,
+      stage: "awaiting_auth",
+      message: `Server restarted while waiting for ${run.pendingAuth.toolName} ${isCaptchaCheckpoint(run.pendingAuth.reason) ? "human verification" : "login"}; checkpoint preserved for retry.`,
+    });
+    return true;
+  }
+
+  run.stage = "awaiting_image_generation";
+  run.activeToolId = undefined;
+  run.activeToolName = undefined;
+  run.pendingAuth = undefined;
+  run.updatedAt = now;
+  run.events.push({ at: now, stage: "awaiting_image_generation", message: "Server restarted; image generation reset for retry." });
+  return true;
+};
 
 export const recoverStuckRuns = async (): Promise<void> => {
   const runsDir = path.join(dataDir, "runs");
@@ -174,17 +229,9 @@ export const recoverStuckRuns = async (): Promise<void> => {
 
     try {
       const run = await readJson<RunRecord>(runFile);
-      if (!ZOMBIE_STAGES.includes(run.stage)) continue;
-
-      const now = new Date().toISOString();
-      run.stage = "awaiting_image_generation";
-      run.activeToolId = undefined;
-      run.activeToolName = undefined;
-      run.pendingAuth = undefined;
-      run.updatedAt = now;
-      run.events.push({ at: now, stage: "awaiting_image_generation", message: "Server restarted; image generation reset for retry." });
+      if (!recoverInterruptedRun(run)) continue;
       await writeJson(runFile, run);
-      process.stderr.write(`[postforge] recovered stuck run ${run.id} → awaiting_image_generation\n`);
+      process.stderr.write(`[postforge] recovered stuck run ${run.id} → ${run.stage}\n`);
     } catch {
       continue;
     }

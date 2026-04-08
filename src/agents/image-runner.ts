@@ -8,7 +8,7 @@ import { ReviewManifestBuilder } from "../review/manifest.js";
 import { AssetStore } from "../storage/assets.js";
 import type { ImageAsset, RunRecord } from "../pipeline/types.js";
 import { ToolGenerationBlockedError, type ToolAdapter } from "../playwright/tools/base.js";
-import { AuthRequiredError } from "../playwright/auth.js";
+import { AuthRequiredError, CaptchaRequiredError } from "../playwright/auth.js";
 
 const adapters: ToolAdapter[] = [
   chatgptAdapter,
@@ -73,7 +73,7 @@ export class ImageRunnerAgent {
         fulfilledAssets.push(asset);
         await callbacks?.onToolComplete?.(asset);
       } catch (error) {
-        if (error instanceof AuthRequiredError) {
+        if (error instanceof AuthRequiredError || error instanceof CaptchaRequiredError) {
           throw error;
         }
         const message = error instanceof Error ? error.message : String(error);

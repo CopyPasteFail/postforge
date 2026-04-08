@@ -2,9 +2,10 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { OrchestratorAgent } from "../orchestrator.js";
+import { runPaths } from "../config/paths.js";
 import { imageToolConfigs, linkedInConfig } from "../config/tools.js";
 import { AuthService } from "../playwright/auth.js";
-import { allowedActionsForStage } from "./helpers.js";
+import { allowedActionsForStage, extractReviewPagePath } from "./helpers.js";
 
 const schema = z.object({
   run_id: z.string(),
@@ -38,7 +39,8 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
         notes: asset.notes,
       }));
 
-      const reviewPageNote = run.notes.find((n) => n.includes("review file"));
+      const reviewPagePath = extractReviewPagePath(run);
+      const paths = runPaths(run.id);
 
       // When auth/CAPTCHA is required, open the browser so the user can act.
       let authNextStep: string | undefined;
@@ -49,7 +51,7 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
         if (isCaptcha) {
           // CAPTCHA: the browser window is already open (kept alive by CaptchaRequiredError).
           // Don't open a new window — just tell the user to complete it.
-          authNextStep = `${run.pendingAuth.toolName} is showing a human verification challenge (CAPTCHA). The browser window is still open — please complete the challenge and tell me when you're done.`;
+          authNextStep = `${run.pendingAuth.toolName} is showing a human verification challenge (CAPTCHA). The browser window may still be open — please complete the challenge there, then call generate_image_candidates again to resume.`;
         } else {
           // Auth: open the browser so the user can log in.
           const pendingConfig = run.pendingAuth.toolId === "linkedin"
@@ -89,7 +91,9 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
                 notes: run.imageAssets.find((a) => a.id === c.assetId)?.notes,
               }))
               : candidates,
-            review_page_path: reviewPageNote,
+            review_page_path: reviewPagePath,
+            review_images_dir: paths.imageDir,
+            comparison_output_dir: paths.comparisonDir,
             auth_required: run.stage === "awaiting_auth" ? {
               tool_id: run.pendingAuth?.toolId,
               tool_name: run.pendingAuth?.toolName,
