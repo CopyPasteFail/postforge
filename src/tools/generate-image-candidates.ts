@@ -29,6 +29,34 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }], isError: true };
       }
 
+      // When the orchestrator returns while generation is still in-flight
+      // (e.g. another MCP call already started it), inform the caller to poll
+      // instead of blocking until the full generation completes.
+      const stillGenerating = run.stage === "generating_images" && run.activeToolId;
+      if (stillGenerating) {
+        const completedSoFar = run.imageAssets.filter((a) => a.status === "generated");
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            run_id: run.id,
+            stage: run.stage,
+            allowed_actions: allowedActionsForStage(run.stage),
+            idempotent: true,
+            data: {
+              next_action: `Image generation is still running on ${run.activeToolName}. ${completedSoFar.length} tool(s) completed so far. Use get_run to poll for progress, or call finalize_candidates to stop early and choose from what is ready.`,
+              candidates_so_far: completedSoFar.map((asset, index) => ({
+                number: index + 1,
+                tool_id: asset.toolId,
+                tool_name: asset.toolName,
+                status: asset.status,
+                file_path: asset.files[0],
+                notes: asset.notes,
+              })),
+              active_tool: run.activeToolName,
+            },
+          }) }],
+        };
+      }
+
       const candidates = run.imageAssets.map((asset, index) => ({
         number: index + 1,
         tool_id: asset.toolId,

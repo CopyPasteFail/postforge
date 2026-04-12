@@ -291,30 +291,31 @@ export const linkedInConfig: LinkedInConfig = {
   composeUrl: "https://www.linkedin.com/feed/",
   loginIndicators: {
     loggedInSelectors: [
-      "div.share-box-feed-entry__trigger",
+      // The compose trigger is a div[role=button] in the light DOM.
       "div[role='button']:has-text('Start a post')",
-      "[role='button'][aria-label*='Start a post']",
-      "button[aria-label*='Start a post']",
-      "button:has-text('Start a post')",
+      // Nav links that only appear when logged in.
+      "a[href*='/messaging/']",
+      "a[href*='/notifications/']",
     ],
     loggedOutSelectors: [
       "a[href*='linkedin.com/login']",
       "button:has-text('Sign in')",
+      "a:has-text('Sign in')",
     ],
   },
   startPostSelectors: [
-    "div.share-box-feed-entry__trigger",
+    // LinkedIn 2026: the "Start a post" trigger is a <div role="button">
+    // containing a <p> with text, inside obfuscated class containers.
     "div[role='button']:has-text('Start a post')",
-    "[role='button'][aria-label*='Start a post']",
-    "button[aria-label*='Start a post']",
-    "button:has-text('Start a post')",
   ],
   textAreaSelectors: [
+    // LinkedIn 2026: the compose dialog lives inside an open Shadow DOM
+    // at #interop-outlet.  Playwright pierces open shadow DOM by default
+    // so these selectors work via page.locator().
     "div.ql-editor[contenteditable='true'][role='textbox']",
-    "div[data-test-ql-editor-contenteditable='true']",
-    "div.editor-content div.ql-editor",
-    "div[role='textbox']",
-    "div[contenteditable='true']",
+    "div[role='textbox'][aria-label='Text editor for creating content']",
+    "div[role='textbox'][contenteditable='true']",
+    "div.ql-editor[contenteditable='true']",
   ],
   uploadSelectors: [
     "input[type='file']",
@@ -323,13 +324,10 @@ export const linkedInConfig: LinkedInConfig = {
     "button:has-text('Post')",
   ],
   dismissSelectors: [
-    "div[role='dialog'] button[aria-label='Dismiss']",
-    "div[role='dialog'] button[title='Close Modal Dialog']",
     "button[aria-label='Dismiss']",
-    "button[title='Close Modal Dialog']",
+    "button[aria-label='Close']",
   ],
   saveDraftSelectors: [
-    "div[role='dialog'] button:has-text('Save as draft')",
     "button:has-text('Save as draft')",
   ],
 };

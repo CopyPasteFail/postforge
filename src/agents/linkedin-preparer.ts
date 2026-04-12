@@ -15,9 +15,14 @@ export class LinkedInPreparerAgent {
       throw new Error("Cannot prepare LinkedIn without a selected image.");
     }
 
+    // Always use interactive=false in MCP mode so that an auth failure
+    // throws AuthRequiredError immediately instead of entering a long
+    // polling loop that exceeds the MCP client timeout.
+    const interactive = false;
+
     if (run.selectedImagePath) {
       this.openImageFolder(run.selectedImagePath);
-      await this.adapter.prepareTextOnly(run.finalDraft.postText);
+      await this.adapter.prepareTextOnly(run.finalDraft.postText, interactive);
       return;
     }
 
@@ -32,7 +37,7 @@ export class LinkedInPreparerAgent {
 
     const imagePath = selectedVariantFile ?? asset.files[0]!;
     this.openImageFolder(imagePath);
-    await this.adapter.prepareTextOnly(run.finalDraft.postText);
+    await this.adapter.prepareTextOnly(run.finalDraft.postText, interactive);
   }
 
   private openImageFolder(imagePath: string): void {

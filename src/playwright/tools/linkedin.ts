@@ -183,10 +183,10 @@ export class LinkedInAdapter {
 
     if (!inputSelector) {
       const mediaButton = page.locator([
-        "div[role='dialog'] button[aria-label*='Photo']",
-        "div[role='dialog'] button[aria-label*='photo']",
-        "div[role='dialog'] button[aria-label*='media']",
-        "div[role='dialog'] button:right-of(:text('Rewrite with AI'))",
+        "button[aria-label*='Photo']",
+        "button[aria-label*='photo']",
+        "button[aria-label*='media']",
+        "button[aria-label*='Add media']",
       ].join(", ")).first();
 
       if ((await mediaButton.count()) === 0 || !(await mediaButton.isVisible().catch(() => false))) {
@@ -216,7 +216,7 @@ export class LinkedInAdapter {
         return;
       }
 
-      const nextButton = page.locator("div[role='dialog'] button:has-text('Next'), button:has-text('Next')").last();
+      const nextButton = page.locator("button:has-text('Next')").last();
       const nextVisible = (await nextButton.count()) > 0 && (await nextButton.isVisible().catch(() => false));
       if (!nextVisible) {
         const state = await this.detectComposerState(page);
@@ -310,11 +310,14 @@ export class LinkedInAdapter {
   }
 
   private async waitForComposerSurface(page: Page, timeoutMs: number): Promise<boolean> {
+    // The compose dialog lives inside an open Shadow DOM (#interop-outlet).
+    // Playwright pierces shadow DOM, but we use specific selectors to avoid
+    // matching the hidden video-player dialogs in the light DOM.
     const dialogSelector = await waitForAnySelector(page, [
-      "div[role='dialog']",
-      "div[aria-label*='Create a post']",
-      "div[aria-label*='post text editor']",
+      "div[role='textbox'][aria-label='Text editor for creating content']",
+      "div.ql-editor[contenteditable='true'][role='textbox']",
       "button:has-text('Post')",
+      "div[role='dialog'] button[aria-label='Dismiss']",
     ], timeoutMs);
 
     return Boolean(dialogSelector);
@@ -326,9 +329,8 @@ export class LinkedInAdapter {
     }
 
     const mediaEditorSelector = await waitForAnySelector(page, [
-      "div[role='dialog']:has-text('Editor')",
-      "div[role='dialog'] button:has-text('Next')",
-      "div[role='dialog'] button[aria-label*='Next']",
+      "button:has-text('Next')",
+      "button[aria-label*='Next']",
     ], 1_000);
 
     return Boolean(mediaEditorSelector);
@@ -368,9 +370,8 @@ export class LinkedInAdapter {
 
   private async detectComposerState(page: Page): Promise<LinkedInComposerState> {
     const mediaEditorSelector = await waitForAnySelector(page, [
-      "div[role='dialog']:has-text('Editor')",
-      "div[role='dialog'] button:has-text('Next')",
-      "div[role='dialog'] button[aria-label*='Next']",
+      "button:has-text('Next')",
+      "button[aria-label*='Next']",
     ], 1_000);
     if (mediaEditorSelector) {
       return "media-editor";
@@ -394,16 +395,24 @@ export class LinkedInAdapter {
   }
 
   private async hasVisibleDialog(page: Page): Promise<boolean> {
-    const dialog = page.locator("div[role='dialog']").first();
-    return (await dialog.count()) > 0 && (await dialog.isVisible().catch(() => false));
+    // The compose dialog lives in an open Shadow DOM.  Playwright pierces it,
+    // but there are also hidden video-player dialogs in the light DOM that
+    // would match first.  Look for the Dismiss button unique to the compose dialog.
+    const composeIndicator = page.locator("div[role='dialog'] button[aria-label='Dismiss']").first();
+    if ((await composeIndicator.count()) > 0 && (await composeIndicator.isVisible().catch(() => false))) {
+      return true;
+    }
+
+    // Fallback: check for a visible textbox inside any dialog.
+    const textbox = page.locator("div[role='dialog'] div[role='textbox']").first();
+    return (await textbox.count()) > 0 && (await textbox.isVisible().catch(() => false));
   }
 
   private async dismissDialog(page: Page): Promise<void> {
     const closeButton = page.locator([
-      "div[role='dialog'] button[aria-label*='Dismiss']",
-      "div[role='dialog'] button[aria-label*='Close']",
-      "div[role='dialog'] button[aria-label*='discard']",
-      "div[role='dialog'] button svg",
+      "button[aria-label='Dismiss']",
+      "button[aria-label='Close']",
+      "button[aria-label*='discard']",
     ].join(", ")).first();
 
     if ((await closeButton.count()) > 0 && (await closeButton.isVisible().catch(() => false))) {
@@ -417,7 +426,9 @@ export class LinkedInAdapter {
   }
 
   private async hasMediaPreview(page: Page): Promise<boolean> {
-    const dialog = page.locator("div[role='dialog']").first();
+    // Target the compose dialog specifically (the one with the Dismiss button)
+    // to avoid matching hidden video-player dialogs in the light DOM.
+    const dialog = page.locator("div[role='dialog']:has(button[aria-label='Dismiss'])").first();
     if ((await dialog.count()) === 0 || !(await dialog.isVisible().catch(() => false))) {
       return false;
     }

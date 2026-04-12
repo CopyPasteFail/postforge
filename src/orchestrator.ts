@@ -70,8 +70,12 @@ export class OrchestratorAgent {
   public async generateImages(runId: string): Promise<RunRecord> {
     const existing = this.inFlightGenerations.get(runId);
     if (existing) {
-      console.error(`[orchestrator] generateImages already in-flight for run ${runId} — joining existing operation.`);
-      return existing;
+      // Return current state immediately instead of joining the existing promise,
+      // which would block until the full generation finishes and likely exceed the
+      // MCP client timeout (120s).  The caller can poll via get_run or call
+      // finalize_candidates when enough images have been captured.
+      console.error(`[orchestrator] generateImages already in-flight for run ${runId} — returning current state instead of blocking.`);
+      return this.state.load(runId);
     }
 
     const promise = this.doGenerateImages(runId);
