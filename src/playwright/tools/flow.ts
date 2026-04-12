@@ -132,21 +132,101 @@ class FlowToolAdapter extends GenericImageToolAdapter {
   }
 
   private async dismissStartupModal(page: Page): Promise<void> {
-    const getStartedSelector = await waitForAnySelector(page, [
-      "button:has-text('Get started')",
-      "[role='dialog'] button:has-text('Get started')",
-      "text=Get started",
-    ], 5_000).catch(() => undefined);
+    await this.dismissOverlays(page);
+  }
 
-    if (!getStartedSelector) {
-      return;
+  /**
+   * Dismiss any overlay that blocks access to the main UI — modal dialogs,
+   * announcement popups, cookie banners, feature tours, etc.
+   *
+   * Runs up to two passes so that stacked overlays (e.g. cookie consent
+   * followed by a feature announcement) are both handled.
+   */
+  private async dismissOverlays(page: Page): Promise<void> {
+    for (let pass = 0; pass < 2; pass++) {
+      const dismissed = await page.evaluate(() => {
+        // ── 1.  Modal / dialog overlays ([role="dialog"], <dialog>, high z-index fixed elements) ──
+        const dialogContainers = [
+          ...Array.from(document.querySelectorAll<HTMLElement>("[role='dialog'], dialog")),
+          ...Array.from(document.querySelectorAll<HTMLElement>("div")).filter((el) => {
+            const style = window.getComputedStyle(el);
+            const z = parseInt(style.zIndex, 10);
+            return (
+              (style.position === "fixed" || style.position === "absolute")
+              && !isNaN(z)
+              && z >= 100
+              && el.offsetWidth > window.innerWidth * 0.4
+              && el.offsetHeight > window.innerHeight * 0.3
+            );
+          }),
+        ];
+
+        // Common dismiss button labels (case-insensitive).
+        const dismissLabels = [
+          "got it", "ok", "okay", "dismiss", "close", "accept",
+          "continue", "get started", "skip", "not now", "maybe later",
+          "i understand", "acknowledge",
+        ];
+
+        const isVisibleButton = (btn: HTMLElement): boolean => {
+          const rect = btn.getBoundingClientRect();
+          const style = window.getComputedStyle(btn);
+          return (
+            rect.width > 0
+            && rect.height > 0
+            && style.display !== "none"
+            && style.visibility !== "hidden"
+            && style.opacity !== "0"
+          );
+        };
+
+        for (const container of dialogContainers) {
+          const buttons = Array.from(container.querySelectorAll<HTMLElement>(
+            "button, [role='button'], a[role='button']",
+          ));
+          for (const btn of buttons) {
+            const text = (btn.textContent ?? "").trim().toLowerCase();
+            const ariaLabel = (btn.getAttribute("aria-label") ?? "").trim().toLowerCase();
+            const match = dismissLabels.some((label) => text === label || ariaLabel === label);
+            if (match && isVisibleButton(btn)) {
+              btn.click();
+              return `dialog:${text}`;
+            }
+          }
+          // Fallback: Material Icon close button inside the dialog.
+          for (const btn of buttons) {
+            const text = (btn.textContent ?? "").trim().toLowerCase();
+            if (text === "close" && isVisibleButton(btn)) {
+              btn.click();
+              return "dialog:close-icon";
+            }
+          }
+        }
+
+        // ── 2.  Inline announcement cards (heading + close button as siblings) ──
+        for (const btn of Array.from(document.querySelectorAll<HTMLElement>("button"))) {
+          if ((btn.textContent ?? "").trim().toLowerCase() !== "close") {
+            continue;
+          }
+          const container = btn.parentElement;
+          if (!container?.querySelector("h1,h2,h3,h4,h5,h6")) {
+            continue;
+          }
+          if (isVisibleButton(btn)) {
+            btn.click();
+            return "card:close-icon";
+          }
+        }
+
+        return null;
+      }).catch(() => null);
+
+      if (!dismissed) {
+        break;
+      }
+      console.error(`[Flow] overlay-dismissed: Closed overlay (${dismissed})`);
+      await delay(800);
     }
-
-    console.error(`[Flow] modal-found: Dismissing startup modal with ${getStartedSelector}`);
-    const button = page.locator(getStartedSelector).last();
-    await button.scrollIntoViewIfNeeded().catch(() => undefined);
-    await button.click().catch(() => undefined);
-    await delay(1_000);
   }
 
   protected override async fillPrompt(page: Page, promptText: string): Promise<void> {

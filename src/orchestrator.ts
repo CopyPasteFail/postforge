@@ -19,6 +19,9 @@ import { AuthRequiredError, CaptchaRequiredError } from "./playwright/auth.js";
 const INACCESSIBLE_FALLBACK = "I can't access enough of that link to use it reliably. Please paste the exact article title and the relevant article text, and I'll draft from that only.";
 
 export class OrchestratorAgent {
+  /** Guards against concurrent generateImages calls for the same run (e.g. after MCP timeout + retry). */
+  private readonly inFlightGenerations = new Map<string, Promise<RunRecord>>();
+
   public constructor(
     private readonly state = new StateStore(),
     private readonly sources = new ArticleSourceService(),
@@ -65,6 +68,22 @@ export class OrchestratorAgent {
   }
 
   public async generateImages(runId: string): Promise<RunRecord> {
+    const existing = this.inFlightGenerations.get(runId);
+    if (existing) {
+      console.error(`[orchestrator] generateImages already in-flight for run ${runId} — joining existing operation.`);
+      return existing;
+    }
+
+    const promise = this.doGenerateImages(runId);
+    this.inFlightGenerations.set(runId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inFlightGenerations.delete(runId);
+    }
+  }
+
+  private async doGenerateImages(runId: string): Promise<RunRecord> {
     const initialRun = await this.state.load(runId);
     if (!initialRun.finalImagePrompt) {
       throw new Error("Final image prompt is missing.");

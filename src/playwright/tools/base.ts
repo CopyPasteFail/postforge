@@ -51,6 +51,10 @@ export class GenericImageToolAdapter implements ToolAdapter {
   /** When true, the browser window is kept open after generate() exits (e.g. for CAPTCHA). */
   private _keepBrowserOpen = false;
 
+  /** Browser context kept alive after a CAPTCHA error so the next generate() call can reuse it
+   *  instead of launching a new browser (which would kill the kept-open one and lose CAPTCHA state). */
+  private keptOpenContext?: import("playwright").BrowserContext;
+
   public constructor(
     public readonly config: ImageToolConfig,
     protected readonly browser = new BrowserService(),
@@ -118,7 +122,25 @@ export class GenericImageToolAdapter implements ToolAdapter {
   public async generate(runId: string, promptText: string, outputDir: string, interactive = true): Promise<ImageAsset> {
     await fs.mkdir(outputDir, { recursive: true });
 
-    const { context, page } = await this.browser.launchPage(this.config.id, this.config.profileId);
+    let context: import("playwright").BrowserContext;
+    let page: Page;
+
+    if (this.keptOpenContext) {
+      // Reuse the browser kept alive after CAPTCHA so we don't kill it and lose session state.
+      context = this.keptOpenContext;
+      this.keptOpenContext = undefined;
+      const existingPage = context.pages().find((p) => {
+        const url = p.url().trim().toLowerCase();
+        return url !== "" && url !== "about:blank";
+      });
+      page = existingPage ?? context.pages()[0] ?? await context.newPage();
+      this.logStep("browser-reuse", "Reusing browser context kept open after CAPTCHA completion");
+    } else {
+      const launched = await this.browser.launchPage(this.config.id, this.config.profileId);
+      context = launched.context;
+      page = launched.page;
+    }
+
     try {
       // launchPage() already navigates to the tool URL for a fresh page.
       // Only re-navigate if we ended up somewhere else (e.g. a cached page at a different URL).
@@ -184,6 +206,7 @@ export class GenericImageToolAdapter implements ToolAdapter {
     } catch (error) {
       if (error instanceof CaptchaRequiredError) {
         this._keepBrowserOpen = true;
+        this.keptOpenContext = context;
         this.logStep("captcha-keep-open", "CAPTCHA detected — browser stays open for user to complete it.");
       }
       throw error;
