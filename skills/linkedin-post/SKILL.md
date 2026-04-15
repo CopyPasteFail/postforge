@@ -116,13 +116,15 @@ Match whole words, case-insensitive. Preserve original text casing.
 
 ## Turn 1: Draft Selection
 
+**Before drafting:** call `start_run` with the user's input (link, draft, or idea) to create a pipeline run and obtain a `run_id`. Carry this `run_id` through all subsequent phases — do NOT call `start_run` again later. If `start_run` returns an existing run for the same source, use that `run_id`.
+
 If input includes an accessible link:
 1. **Source facts** - Extract 3 to 6 concrete facts, names, or claims from that exact link only.
 2. **Hooks** - Generate 10 hook options, numbered 1 to 10, one line each, following Hook Rules.
 3. **Text variations** - Generate 5 complete post bodies labeled A, B, C, D, E. Each starts with [HOOK GOES HERE]. Follow the Post Blueprint. No hashtags. Vary endings across bodies. Article anchor must include at least one specific number, metric, or named entity when available.
 4. **Selection prompt** - Ask the user to choose with a combo like "2C". If only number: keep that hook, choose best variation. If only letter: use best hook, keep that variation. If "finalize": choose the strongest hook and variation.
 
-If link is inaccessible, use the exact fallback line and stop.
+If link is inaccessible, use the exact fallback line and stop. The `run_id` from `start_run` can still be reused if the user later pastes article text — call `submit_approved_copy` on it once content is approved.
 
 ---
 
@@ -181,12 +183,10 @@ Regenerate only the selected concept into one super-detailed final prompt. Inclu
 
 Output inside a single plain fenced markdown block with no language tag.
 
-**Step 4: Start a pipeline run and submit approved copy**
+**Step 4: Submit approved copy and hand off to the server**
 When the user confirms the prompt, use the MCP tools to hand off to the browser automation server:
 
-1. Call `start_run` with the original link/idea as `input_text`.
-   - This creates a pipeline run and returns a `run_id`.
-   - If the server says an existing run already exists, use that `run_id`.
+1. Use the `run_id` obtained from `start_run` at Turn 1 (Phase 1 entry). Do NOT call `start_run` again here — calling it a second time with a URL re-fetches the article and may fail (HTTP 403, paywall, etc.) even if the article was accessible earlier. If you don't have a `run_id` yet (e.g. this is an idea-only flow with no prior `start_run`), call `start_run` now with `input_kind: "idea"` and a brief topic description as `input_text`.
 
 2. Call `submit_approved_copy` with:
    - `run_id` from step 1

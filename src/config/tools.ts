@@ -50,6 +50,9 @@ export const imageToolConfigs: ImageToolConfig[] = [
     setting: "DALL-E",
     loginIndicators: {
       loggedInSelectors: [
+        // Stable test-ids from ChatGPT's own chrome (verified 2026-04).
+        "[data-testid='accounts-profile-button']",
+        "[data-testid='create-new-chat-button']",
         "#prompt-textarea",
         "textarea[placeholder*='Message']",
       ],
@@ -107,17 +110,23 @@ export const imageToolConfigs: ImageToolConfig[] = [
       "div[contenteditable='true']",
     ],
     submitSelectors: [
+      // Verified live 2026-04: Gemini's send control is an aria-labeled
+      // button rather than a test-id'd one.
+      "button[aria-label='Send message']",
       "button[aria-label*='Send']",
       "button:has-text('Send')",
     ],
     resultImageSelectors: [
+      "model-response img[alt*='AI generated' i]",
+      "model-response img.image.loaded",
       "img",
     ],
     busySelectors: [
       "button[aria-label*='Stop']",
+      "mat-progress-spinner",
       "mat-progress-bar",
     ],
-    notes: "May require selector tuning for Gemini's image-mode toggle.",
+    notes: "Relies on <model-response> + [data-test-id='download-generated-image-button'] as the completion affordance (verified live 2026-04).",
   },
   {
     id: "ai-studio",
@@ -271,6 +280,10 @@ export const imageToolConfigs: ImageToolConfig[] = [
       "div[contenteditable='true']",
     ],
     submitSelectors: [
+      // Stable test-id Copilot uses for the composer send control (verified 2026-04).
+      "button[data-testid='submit-button']",
+      "button[aria-label='Submit message']",
+      // Legacy fallbacks.
       "button[aria-label*='Send']",
       "button:has-text('Send')",
     ],
@@ -278,6 +291,8 @@ export const imageToolConfigs: ImageToolConfig[] = [
       "img",
     ],
     busySelectors: [
+      // Stable test-id Copilot uses for the mid-stream interrupt control (verified 2026-04).
+      "button[data-testid='stop-button']",
       "button:has-text('Stop')",
     ],
     notes: "Image routing may depend on the current Copilot experience and can require adapter tuning.",

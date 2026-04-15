@@ -1,176 +1,232 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 
-import type { Download, Locator, Page } from "playwright";
+import type { Locator, Page } from "playwright";
 
 import { imageToolConfigs } from "../../config/tools.js";
-import { waitForAnySelector } from "../waits.js";
 import { GenericImageToolAdapter, ToolGenerationBlockedError } from "./base.js";
 
+/**
+ * ChatGPT image-generation chrome (verified live against chatgpt.com on
+ * 2026-04-14).
+ *
+ * Each conversation message is wrapped in a `[data-testid^='conversation-turn']`
+ * container. While an image is being generated, the page renders a
+ * `[data-testid='image-gen-loading-state']` subtree inside the last turn and
+ * streaming is gated by `button[data-testid='stop-button']` in the composer.
+ *
+ * Once the image is sealed, the loading state and stop button are gone and
+ * the last turn picks up action buttons from the app's chrome:
+ *   - `[data-testid='copy-turn-action-button']`      (assistant turn baseline)
+ *   - `[data-testid='good-image-turn-action-button']`(image-specific thumbs-up)
+ *   - `[data-testid='bad-image-turn-action-button']` (image-specific thumbs-down)
+ *
+ * The `*-image-turn-action-button` test-ids only render on assistant turns
+ * that contain a sealed image result, so checking both of them (scoped to the
+ * LATEST turn) is a reliable completion signal that doesn't depend on model-
+ * authored text — which the user explicitly flagged as unreliable.
+ *
+ * Refusal / policy-block detection: the app's own decision to render text
+ * instead of image chrome is itself a DOM signal. When the stream has settled
+ * (no loading state, no stop-button) and the last turn is a sealed assistant
+ * turn with text but no image chrome, that is a refusal — we surface it as a
+ * ToolGenerationBlockedError so the pipeline can mark the result instead of
+ * silently timing out. This reads DOM structure rendered by the app, not the
+ * model's wording.
+ */
 class ChatGptToolAdapter extends GenericImageToolAdapter {
-  protected override async waitForResultElements(page: Page, timeoutMs = 90_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    let rawParamsSeenAt: number | undefined;
+  protected override async hasCompletionAffordance(page: Page): Promise<boolean> {
+    const signals = await page.evaluate(() => {
+      const turns = document.querySelectorAll("[data-testid^='conversation-turn']");
+      const lastTurn = turns[turns.length - 1];
+      if (!lastTurn) {
+        return { ready: false, reason: "no conversation-turn elements yet" };
+      }
 
-    while (Date.now() < deadline) {
-      const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
-      const normalized = bodyText.toLowerCase();
+      const goodBtn = lastTurn.querySelector("[data-testid='good-image-turn-action-button']");
+      const badBtn = lastTurn.querySelector("[data-testid='bad-image-turn-action-button']");
+      if (!goodBtn || !badBtn) {
+        return { ready: false, reason: "image-turn action buttons not rendered yet" };
+      }
 
-      // Check for an explicit content block message (only NEW text, not leftover from a prior chat).
-      if (this.isContentBlockedNew(normalized)) {
+      // Streaming / mid-generation gates: loading state and stop button.
+      if (document.querySelector("[data-testid^='image-gen-loading-state']")) {
+        return { ready: false, reason: "image-gen-loading-state still present" };
+      }
+      if (document.querySelector("button[data-testid='stop-button']")) {
+        return { ready: false, reason: "stop-button is active" };
+      }
+
+      return {
+        ready: true,
+        reason: "last turn has good+bad-image-turn-action-button, no loading state, no stop-button",
+      };
+    }).catch(() => ({ ready: false, reason: "evaluate failed" }));
+
+    if (signals.ready) {
+      console.error(`[ChatGPT] completion-affordance: ${signals.reason}`);
+    }
+    return signals.ready;
+  }
+
+  /**
+   * True when the stream has settled but the last assistant turn has no image
+   * chrome — i.e., the app rendered text instead of an image result. This is
+   * the refusal path (copyright / policy block / "can't help with that"). We
+   * key off DOM structure rendered by the app, not the model's wording.
+   */
+  private async isRefusal(page: Page): Promise<boolean> {
+    return page.evaluate(() => {
+      if (document.querySelector("[data-testid^='image-gen-loading-state']")) return false;
+      if (document.querySelector("button[data-testid='stop-button']")) return false;
+
+      const turns = document.querySelectorAll("[data-testid^='conversation-turn']");
+      const lastTurn = turns[turns.length - 1];
+      if (!lastTurn) return false;
+
+      // Sealed assistant turns get a copy button from the app's chrome.
+      if (!lastTurn.querySelector("[data-testid='copy-turn-action-button']")) return false;
+
+      // If image chrome is present we treat it as success, not refusal.
+      if (lastTurn.querySelector("[data-testid='good-image-turn-action-button']")) return false;
+      if (lastTurn.querySelector("[data-testid='bad-image-turn-action-button']")) return false;
+
+      // Non-trivial text content in a sealed assistant turn without image
+      // chrome = the app rendered a text reply instead of an image.
+      const text = (lastTurn.textContent ?? "").trim();
+      return text.length > 40;
+    }).catch(() => false);
+  }
+
+  protected override async waitForResultElements(page: Page, timeoutMs = 180_000): Promise<void> {
+    await this.waitForCompletionAffordance(page, timeoutMs, async (p) => {
+      if (await this.isRefusal(p)) {
         throw new ToolGenerationBlockedError(
-          "ChatGPT blocked the image request due to a copyright or compliance policy.",
+          "ChatGPT refused the image request (no image produced).",
           "copyright_block",
         );
       }
-
-      // Detect when ChatGPT outputs the raw DALL-E parameters as text (silent failure/block).
-      // Wait up to 20s for an image to appear — if none does, treat it as a failed generation.
-      if (!rawParamsSeenAt && /\{"size"\s*:\s*"[\dx]+"/.test(bodyText)) {
-        rawParamsSeenAt = Date.now();
-        console.error("[ChatGPT] raw-dalle-params: Detected raw DALL-E parameters in response — waiting up to 20s for image");
-      }
-      if (rawParamsSeenAt && Date.now() - rawParamsSeenAt > 20_000) {
-        console.error("[ChatGPT] raw-dalle-params-timeout: No image appeared after raw params — treating as silent generation failure");
-        return;
-      }
-
-      // Check for a generated image stable across two ticks.
-      const image = await this.findPrimaryImage(page);
-      if (image) {
-        await page.waitForTimeout(1_500).catch(() => undefined);
-        const box = await image.boundingBox().catch(() => null);
-        if (box && box.width >= 300 && box.height >= 200) {
-          console.error(`[ChatGPT] result-ready: Detected stable generated image`);
-          return;
-        }
-      }
-
-      await page.waitForTimeout(1_500).catch(() => undefined);
-    }
-
-    // Final block check before giving up.
-    const finalText = (await page.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
-    if (this.isContentBlockedNew(finalText)) {
-      throw new ToolGenerationBlockedError(
-        "ChatGPT blocked the image request due to a copyright or compliance policy.",
-        "copyright_block",
-      );
-    }
-
-    console.error(`[ChatGPT] result-ready-timeout: No stable generated image within ${Math.round(timeoutMs / 1_000)}s`);
-  }
-
-  private isContentBlockedNew(bodyText: string): boolean {
-    const phrases = [
-      "may violate our guardrails",
-      "similarity to third-party content",
-      "i wasn't able to generate",
-      "i'm not able to generate",
-      "i can't create this image",
-      "i can't generate this image",
-      "i cannot generate this image",
-      "request violates our usage policies",
-      "your request was rejected",
-      "this prompt has been blocked",
-      "copyrighted characters",
-      "intellectual property rights",
-      "i'm not able to help with that request",
-    ];
-    return phrases.some((phrase) => this.isNewText(bodyText, phrase));
+    });
   }
 
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {
-    const downloaded = await this.downloadFromChatGpt(page, outputDir);
-    if (downloaded) {
-      console.error(`[ChatGPT] result-saved: Downloaded image artifact ${downloaded}`);
-      return [downloaded];
+    const target = await this.findLastTurnImage(page);
+    if (!target) {
+      console.error("[ChatGPT] result-capture-fallback: no image found in last turn, using generic capture");
+      return super.captureResultElements(page, outputDir);
     }
 
-    console.error("[ChatGPT] result-download-fallback: Falling back to generic media capture");
-    return super.captureResultElements(page, outputDir);
+    const fileBase = path.join(outputDir, "chatgpt-result-1");
+    const saved = await this.downloadImageAsBlob(target, fileBase);
+    if (saved) {
+      console.error(`[ChatGPT] result-saved: Downloaded image artifact ${saved}`);
+      return [saved];
+    }
+
+    const screenshotPath = `${fileBase}.png`;
+    await target.screenshot({ path: screenshotPath }).catch(() => undefined);
+    try {
+      await fs.access(screenshotPath);
+      console.error(`[ChatGPT] result-saved: Screenshot fallback ${screenshotPath}`);
+      return [screenshotPath];
+    } catch {
+      return super.captureResultElements(page, outputDir);
+    }
   }
 
-  private async downloadFromChatGpt(page: Page, outputDir: string): Promise<string | undefined> {
-    const image = await this.findPrimaryImage(page);
-    if (image) {
-      await image.hover().catch(() => undefined);
-      await page.waitForTimeout(500).catch(() => undefined);
+  /**
+   * Locate the generated image inside the LATEST conversation turn. Using
+   * `img[alt*='Generated image']` is the most specific hit (the alt is set by
+   * ChatGPT's chrome for image results); we fall back to the first visible
+   * `<img>` in the last turn if the alt pattern changes.
+   */
+  private async findLastTurnImage(page: Page): Promise<Locator | undefined> {
+    const turnLocator = page.locator("[data-testid^='conversation-turn']");
+    const turnCount = await turnLocator.count().catch(() => 0);
+    if (turnCount === 0) {
+      return undefined;
     }
 
-    for (const selector of this.downloadButtonSelectors()) {
-      const button = page.locator(selector).first();
-      const visible = (await button.count().catch(() => 0)) > 0 && await button.isVisible().catch(() => false);
-      if (!visible) {
-        continue;
-      }
+    const lastTurn = turnLocator.nth(turnCount - 1);
 
-      console.error(`[ChatGPT] download-found: Using ${selector}`);
-      const download = await this.clickAndCaptureDownload(page, button);
-      if (!download) {
-        continue;
+    const altMatch = lastTurn.locator("img[alt*='Generated image' i]").first();
+    if ((await altMatch.count().catch(() => 0)) > 0 && (await altMatch.isVisible().catch(() => false))) {
+      const box = await altMatch.boundingBox().catch(() => null);
+      if (box && box.width >= 200 && box.height >= 200) {
+        return altMatch;
       }
-
-      const extension = this.extensionFromSuggestedFilename(download.suggestedFilename());
-      const destination = path.join(outputDir, `chatgpt-result-1.${extension}`);
-      await download.saveAs(destination);
-      return destination;
     }
 
-    return undefined;
-  }
-
-  private async findPrimaryImage(page: Page): Promise<Locator | undefined> {
-    const selectors = [
-      "article img",
-      "main img",
-      "img",
-    ];
-
-    for (const selector of selectors) {
-      const locator = page.locator(selector);
-      const count = await locator.count();
-      for (let index = 0; index < Math.min(count, 8); index += 1) {
-        const node = locator.nth(index);
-        const visible = await node.isVisible().catch(() => false);
-        if (!visible) {
-          continue;
-        }
-
-        const box = await node.boundingBox().catch(() => null);
-        if (!box || box.width < 300 || box.height < 200) {
-          continue;
-        }
-
-        return node;
+    const fallback = lastTurn.locator("img").first();
+    if ((await fallback.count().catch(() => 0)) > 0 && (await fallback.isVisible().catch(() => false))) {
+      const box = await fallback.boundingBox().catch(() => null);
+      if (box && box.width >= 200 && box.height >= 200) {
+        return fallback;
       }
     }
 
     return undefined;
   }
 
-  private async clickAndCaptureDownload(page: Page, button: Locator): Promise<Download | undefined> {
-    const downloadPromise = page.waitForEvent("download", { timeout: 20_000 }).catch(() => undefined);
-    await button.click().catch(() => undefined);
-    const download = await downloadPromise;
-    if (download) {
-      console.error(`[ChatGPT] download-clicked: Browser download started as ${download.suggestedFilename()}`);
+  /**
+   * In-page `fetch()` inherits session cookies, which is what ChatGPT's
+   * `backend-api/estuary/content` endpoint requires. We round-trip the
+   * resulting blob through a FileReader → data-URL so it crosses the
+   * evaluate boundary, then persist it to disk.
+   */
+  private async downloadImageAsBlob(node: Locator, fileBase: string): Promise<string | undefined> {
+    const payload = await node.evaluate(async (element) => {
+      if (!(element instanceof HTMLImageElement)) {
+        return null;
+      }
+
+      const src = element.currentSrc || element.src;
+      if (!src) {
+        return null;
+      }
+
+      try {
+        const response = await fetch(src, { credentials: "include" });
+        if (!response.ok) {
+          return null;
+        }
+        const blob = await response.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result ?? ""));
+          reader.onerror = () => reject(reader.error ?? new Error("Could not read blob."));
+          reader.readAsDataURL(blob);
+        });
+
+        return {
+          src,
+          mimeType: blob.type,
+          dataUrl,
+        };
+      } catch {
+        return null;
+      }
+    }).catch(() => null);
+
+    if (!payload?.dataUrl?.startsWith("data:")) {
+      return undefined;
     }
-    return download;
-  }
 
-  private downloadButtonSelectors(): string[] {
-    return [
-      "button[aria-label='Download this image']",
-      "button[aria-label*='Download this image']",
-      "button[aria-label*='Download']",
-      "button[title*='Download']",
-      "[role='button'][aria-label*='Download']",
-    ];
-  }
+    const match = payload.dataUrl.match(/^data:([^;]+);base64,([\s\S]+)$/);
+    if (!match) {
+      return undefined;
+    }
 
-  private extensionFromSuggestedFilename(filename: string): string {
-    const extension = path.extname(filename).replace(/^\./, "").toLowerCase();
-    return extension || "png";
+    const mimeType = (match[1] ?? "image/png").toLowerCase();
+    const extension =
+      mimeType.includes("png") ? "png"
+        : mimeType.includes("jpeg") || mimeType.includes("jpg") ? "jpg"
+          : mimeType.includes("webp") ? "webp"
+            : mimeType.includes("gif") ? "gif"
+              : "png";
+    const filePath = `${fileBase}.${extension}`;
+    await fs.writeFile(filePath, Buffer.from(match[2]!, "base64"));
+    return filePath;
   }
 }
 

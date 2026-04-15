@@ -251,48 +251,74 @@ class FlowToolAdapter extends GenericImageToolAdapter {
     console.error(`[Flow] prompt-inserted: Prompt inserted into Flow textbox via keyboard input`);
   }
 
-  protected override async waitForResultElements(page: Page, timeoutMs = 180_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    let lastSignature = "";
-    let stableChecks = 0;
+  /**
+   * Flow assigns `alt="Generated image"` to each tile's `<img>` once the
+   * tile's bytes are resolved; the alt attribute is Flow's own chrome, not
+   * model-authored text. We additionally diff against a pre-generation
+   * baseline so that tiles from prior runs in the same project don't
+   * false-positive completion.
+   *
+   * Completion = at least two NEW `img[alt='Generated image']` tiles with a
+   * non-empty `currentSrc` and `naturalWidth > 0`.
+   */
+  protected override async hasCompletionAffordance(page: Page): Promise<boolean> {
+    const baselineList = [...this.baselineSources];
+    const signals = await page.evaluate((baselineSources) => {
+      const baseline = new Set(baselineSources);
+      const tiles = Array.from(document.querySelectorAll<HTMLImageElement>("img[alt='Generated image']"));
+      const ready = tiles.filter((img) => {
+        const src = img.currentSrc || img.src || "";
+        if (!src || baseline.has(src)) return false;
+        if ((img.naturalWidth ?? 0) === 0) return false;
+        const rect = img.getBoundingClientRect();
+        const style = window.getComputedStyle(img);
+        return rect.width > 150
+          && rect.height > 150
+          && style.display !== "none"
+          && style.visibility !== "hidden"
+          && style.opacity !== "0";
+      });
+      return { readyCount: ready.length, totalCount: tiles.length };
+    }, baselineList).catch(() => ({ readyCount: 0, totalCount: 0 }));
 
-    while (Date.now() < deadline) {
-      const bodyText = (await page.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
-      if (
-        this.isNewText(bodyText, "image generation request denied")
-        || this.isNewText(bodyText, "due to interests of third-party content providers")
-        || this.isNewText(bodyText, "please edit your prompt and try again")
-        || this.isNewText(bodyText, "i can't generate the image you requested right now")
-        || this.isNewText(bodyText, "this generation might violate our policies")
-        || this.isNewText(bodyText, "image generation failed")
-        || this.isNewText(bodyText, "generation failed")
-        || this.isNewText(bodyText, "try a different prompt or send feedback")
-      ) {
+    if (signals.readyCount >= 2) {
+      console.error(`[Flow] completion-affordance: ${signals.readyCount} new Generated-image tile(s) resolved (total ${signals.totalCount})`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Flow renders a tool-chrome banner when a prompt is denied ("image
+   * generation request denied", "due to interests of third-party content
+   * providers", etc.). These strings come from Flow's own UI, not from the
+   * model, so text matching here is a structural signal — much narrower
+   * than before. We intentionally dropped the first-person model-authored
+   * phrases ("I can't generate the image you requested...") since those
+   * are model output and can be phrased arbitrarily.
+   */
+  private async detectBannerBlock(page: Page): Promise<boolean> {
+    const bodyText = (await page.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
+    return (
+      this.isNewText(bodyText, "image generation request denied")
+      || this.isNewText(bodyText, "due to interests of third-party content providers")
+      || this.isNewText(bodyText, "please edit your prompt and try again")
+      || this.isNewText(bodyText, "this generation might violate our policies")
+      || this.isNewText(bodyText, "image generation failed")
+      || this.isNewText(bodyText, "generation failed")
+    );
+  }
+
+  protected override async waitForResultElements(page: Page, timeoutMs = 180_000): Promise<void> {
+    await this.waitForCompletionAffordance(page, timeoutMs, async (p) => {
+      if (await this.detectBannerBlock(p)) {
+        const bodyText = (await p.locator("body").textContent().catch(() => "") ?? "").toLowerCase();
         throw new ToolGenerationBlockedError(
           "Image could not be produced due to a copyright or policy block from Flow.",
           bodyText.includes("third-party content") ? "copyright_block" : "policy_block",
         );
       }
-
-      const images = this.selectTargetImages(await this.collectVisibleGeneratedImages(page));
-      if (images.length >= 2) {
-        const signature = images
-          .slice(0, 2)
-          .map((image) => `${image.index}:${image.naturalWidth}x${image.naturalHeight}:${image.src}`)
-          .join("|");
-
-        stableChecks = signature === lastSignature ? stableChecks + 1 : 1;
-        lastSignature = signature;
-        if (stableChecks >= 2) {
-          console.error(`[Flow] result-ready: Detected ${images.length} stable generated image(s)`);
-          return;
-        }
-      }
-
-      await delay(1_500);
-    }
-
-    console.error(`[Flow] result-ready-timeout: Did not detect two stable generated images within ${Math.round(timeoutMs / 1_000)}s`);
+    });
   }
 
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {

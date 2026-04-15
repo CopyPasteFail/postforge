@@ -348,13 +348,13 @@ export class OrchestratorAgent {
       if (input.kind === "link") {
         const articleSource = await this.sources.fetchFromLink(input.sourceLink);
         run.articleSource = articleSource;
-
-        if (!articleSource.accessible) {
-          run.stage = "blocked_on_source_access";
-          run.notes.push(INACCESSIBLE_FALLBACK);
-          run.events.push(this.state.event("blocked_on_source_access", articleSource.reason ?? "Source was not accessible."));
-          return;
-        }
+        // Do NOT block the run when the article is inaccessible. The skill
+        // (Claude) already handles URL accessibility via its own WebFetch
+        // during Phase 1 writing and shows the appropriate "can't access"
+        // fallback to the user at that point. Blocking start_run on a 403
+        // here causes a secondary failure in Phase 2 (after the post is
+        // already approved) when start_run is called only to obtain a run_id.
+        // Recording articleSource is enough for metadata / provenance.
       }
 
       run.stage = "awaiting_content_approval";

@@ -61,35 +61,50 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
     return super.captureResultElements(page, outputDir);
   }
 
-  protected override async waitForResultElements(page: Page, timeoutMs = 120_000): Promise<void> {
-    let rerunAttempts = 0;
-    const maxReruns = 3;
-    const effectiveTimeout = Math.max(timeoutMs, 180_000);
-
-    const runButton = await this.findRunButton(page);
-    if (runButton) {
-      await this.waitForRunCycle(runButton, effectiveTimeout);
-      await this.scrollToBottom(page);
-      if (await this.isContentBlocked(page)) {
-        throw new ToolGenerationBlockedError(
-          "Image could not be produced due to a copyright or content block from AI Studio.",
-          "copyright_block",
-        );
-      }
-      if (await this.findGeneratedImage(page)) {
-        return;
-      }
-
-      if (rerunAttempts < maxReruns && await this.tryRerunTurn(page)) {
-        rerunAttempts++;
-        await delay(2_000);
-      }
+  /**
+   * AI Studio renders a `div.turn-footer` inside `ms-chat-turn` ONLY
+   * after the turn is sealed (it's Angular `*ngIf`-conditional on the
+   * run being finished). Inside that footer lives a
+   * `span.model-run-time-pill` showing the run duration (e.g. "45.799s")
+   * — that duration can only be measured post-seal, so the pill is the
+   * canonical completion signal. Feedback buttons ("Good response",
+   * "Bad response") and "Rerun this turn" live in the same footer and
+   * would also work, but the pill is language-independent.
+   *
+   * Verified live against aistudio.google.com on 2026-04-14.
+   *
+   * For image-generation mode (Nano Banana) we additionally require a
+   * visible image in the last turn; a sealed turn with only text means
+   * the model refused or produced a thoughts-only response and we need
+   * to trigger a rerun.
+   */
+  protected override async hasCompletionAffordance(page: Page): Promise<boolean> {
+    const sealed = await page.evaluate(() => {
+      const turns = document.querySelectorAll("ms-chat-turn");
+      const lastTurn = turns[turns.length - 1];
+      if (!lastTurn) return false;
+      // The pill is added by Angular *ngIf once the run is done. Its
+      // mere presence is the completion signal — no need to read text.
+      return !!lastTurn.querySelector(".turn-footer .model-run-time-pill");
+    }).catch(() => false);
+    if (sealed) {
+      console.error(`[${this.config.name}] completion-affordance: .model-run-time-pill present on last turn`);
     }
+    return sealed;
+  }
+
+  protected override async waitForResultElements(page: Page, timeoutMs = 120_000): Promise<void> {
+    const effectiveTimeout = Math.max(timeoutMs, 180_000);
+    const maxReruns = 3;
+    let rerunAttempts = 0;
 
     const deadline = Date.now() + effectiveTimeout;
     while (Date.now() < deadline) {
       await this.scrollToBottom(page);
 
+      // Content-block / transient-error banners are tool chrome (AI
+      // Studio's own error surface), not model output, so text matching
+      // is correct here.
       if (await this.isContentBlocked(page)) {
         throw new ToolGenerationBlockedError(
           "Image could not be produced due to a copyright or content block from AI Studio.",
@@ -100,32 +115,43 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       if (await this.hasTransientError(page) && rerunAttempts < maxReruns) {
         console.error(`[${this.config.name}] transient-error: Detected transient failure, attempting rerun (${rerunAttempts + 1}/${maxReruns})`);
         if (await this.tryRerunTurn(page)) {
-          rerunAttempts++;
+          rerunAttempts += 1;
           await delay(3_000);
           continue;
         }
       }
 
-      await super.waitForResultElements(page, 8_000);
-      if (await this.findGeneratedImage(page)) {
+      if (await this.hasCompletionAffordance(page)) {
+        // Turn is sealed. For image mode, verify an image landed in the
+        // last turn — if not, the model went off-task (e.g. emitted only
+        // thoughts text); trigger a rerun if we have budget.
+        if (await this.findGeneratedImage(page)) {
+          return;
+        }
+
+        if (rerunAttempts < maxReruns && await this.tryRerunTurn(page)) {
+          console.error(`[${this.config.name}] sealed-without-image: rerunning (${rerunAttempts + 1}/${maxReruns})`);
+          rerunAttempts += 1;
+          await delay(2_000);
+          continue;
+        }
+
+        // Out of rerun budget. Return so the caller can see whatever
+        // screenshot / artifacts exist; captureResultElements will
+        // report `warning` if no image was found.
         return;
       }
 
-      if (rerunAttempts < maxReruns && await this.tryRerunTurn(page)) {
-        rerunAttempts++;
-        await delay(2_000);
-      }
+      await delay(1_000);
     }
 
+    // Timed out. Re-check blocks one last time in case the banner arrived
+    // at the deadline.
     if (await this.isContentBlocked(page)) {
       throw new ToolGenerationBlockedError(
         "Image could not be produced due to a copyright or content block from AI Studio.",
         "copyright_block",
       );
-    }
-
-    if (await this.findGeneratedImage(page)) {
-      return;
     }
   }
 
@@ -340,20 +366,6 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
     return undefined;
   }
 
-  private async findRunButton(page: Page): Promise<Locator | undefined> {
-    for (const selector of [
-      "button:has-text('Run')",
-      "button[aria-label*='Run']",
-    ]) {
-      const button = page.locator(selector).first();
-      if (await button.isVisible().catch(() => false)) {
-        return button;
-      }
-    }
-
-    return undefined;
-  }
-
   private async isContentBlocked(page: Page): Promise<boolean> {
     const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
     const normalized = bodyText.toLowerCase();
@@ -362,30 +374,6 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       || normalized.includes("safety blocked")
       || normalized.includes("copyright")
       || normalized.includes("third-party content");
-  }
-
-  private async waitForRunCycle(runButton: Locator, timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    let sawDisabled = false;
-
-    while (Date.now() < deadline) {
-      const disabled = await this.isButtonDisabled(runButton);
-      if (disabled) {
-        sawDisabled = true;
-      } else if (sawDisabled) {
-        return;
-      }
-
-      await delay(1_000);
-    }
-  }
-
-  private async isButtonDisabled(button: Locator): Promise<boolean> {
-    return button.evaluate((node) => {
-      const element = node as HTMLButtonElement;
-      const ariaDisabled = element.getAttribute("aria-disabled");
-      return element.disabled || ariaDisabled === "true";
-    }).catch(() => false);
   }
 
   private async scrollToBottom(page: Page): Promise<void> {
@@ -537,6 +525,10 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       }
     }
 
+    // No Rerun item in this overflow menu (likely because the turn already
+    // has an image and we raced the completion signal). Close the menu so
+    // it doesn't linger over the composer / capture path.
+    await page.keyboard.press("Escape").catch(() => undefined);
     return false;
   }
 }

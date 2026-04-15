@@ -4,8 +4,6 @@ import path from "node:path";
 import type { Locator, Page } from "playwright";
 
 import { imageToolConfigs } from "../../config/tools.js";
-import type { ImageAsset } from "../../pipeline/types.js";
-import { delay } from "../waits.js";
 import { AuthRequiredError, CaptchaRequiredError } from "../auth.js";
 import { GenericImageToolAdapter } from "./base.js";
 
@@ -51,7 +49,9 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
       if (document.querySelector("#cf-turnstile, [class*='turnstile'], [class*='cf-chl'], [id*='cf-chl']")) {
         return true;
       }
-      // Check page text for generic CAPTCHA indicators.
+      // Check page text for generic CAPTCHA indicators. This phrasing IS
+      // tool chrome (Cloudflare / Microsoft verification banner), not model
+      // output, so text matching is acceptable here.
       const text = document.body?.textContent?.toLowerCase() ?? "";
       return text.includes("verify you are human")
         || text.includes("human verification")
@@ -70,6 +70,8 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
   }
 
   private async checkSignInModal(page: Page): Promise<void> {
+    // These phrases are tool-chrome (Copilot's sign-in modal), not model
+    // output, so text matching is appropriate.
     const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
     const normalized = bodyText.toLowerCase();
     if (
@@ -88,69 +90,77 @@ class CopilotToolAdapter extends GenericImageToolAdapter {
     }
   }
 
-  protected override async waitForResultElements(page: Page, timeoutMs = 420_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    let sawGenerationSignals = false;
-    let stableResolvedChecks = 0;
-    let lastResolvedSignature = "";
-    while (Date.now() < deadline) {
-      await this.checkSignInModal(page);
-      await this.checkCaptcha(page);
+  /**
+   * Copilot renders its image-result chrome ONLY after the image URL is
+   * finalized and the assistant turn is sealed:
+   *   - An `[data-testid="ai-image-message"]` container wraps the result.
+   *   - Inside it, `[data-testid="ai-image-download-button"]` and
+   *     `[data-testid="ai-image-share-button"]` render once the image is
+   *     available for download.
+   *   - The composer swaps in a `[data-testid="stop-button"]` during
+   *     streaming and removes it at seal.
+   *
+   * Verified live against copilot.microsoft.com on 2026-04-14. These
+   * `data-testid` attributes are semantic test hooks and far more stable
+   * than text, aria-labels, or visual cues like image blur. Notably the
+   * old "non-blurred image = ready" heuristic was wrong: Copilot always
+   * renders a decorative `blur-sm` backdrop copy of the image, so
+   * filtering by CSS blur never worked the way it appeared to.
+   *
+   * Completion = download button exists and is visible AND no active
+   * Stop button anywhere (which would indicate a NEW generation kicked
+   * off after the last seal).
+   */
+  protected override async hasCompletionAffordance(page: Page): Promise<boolean> {
+    const signals = await page.evaluate(() => {
+      const isVisible = (element: Element | null): boolean => {
+        if (!element) return false;
+        const htmlElement = element as HTMLElement;
+        const rect = htmlElement.getBoundingClientRect();
+        const style = window.getComputedStyle(htmlElement);
+        return rect.width > 0
+          && rect.height > 0
+          && style.display !== "none"
+          && style.visibility !== "hidden"
+          && style.opacity !== "0";
+      };
 
-      const images = await this.collectVisibleImages(page);
-      const ready = images.filter((image) => !image.blurred);
-      const generationSignals = await this.hasGenerationSignals(page, images);
-      const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
-      const explicitReady = /your illustration is ready now/i.test(bodyText);
-
-      if (generationSignals) {
-        sawGenerationSignals = true;
-      } else if (explicitReady && sawGenerationSignals) {
-        console.error("[Copilot] result-ready: Copilot reported that the illustration is ready");
-        return;
-      } else if (sawGenerationSignals && ready.length > 0) {
-        const signature = ready
-          .map((image) => `${image.index}:${image.src}:${image.naturalWidth}x${image.naturalHeight}`)
-          .join("|");
-        stableResolvedChecks = signature === lastResolvedSignature ? stableResolvedChecks + 1 : 1;
-        lastResolvedSignature = signature;
-        if (stableResolvedChecks >= 2) {
-          console.error(`[Copilot] result-ready: Detected ${ready.length} resolved image candidate(s) after generation finished`);
-          return;
-        }
+      const imageContainer = document.querySelector("[data-testid='ai-image-message']");
+      if (!imageContainer) {
+        return { ready: false, reason: "no [data-testid='ai-image-message'] yet" };
       }
 
-      await delay(1_500);
-    }
+      const downloadBtn = imageContainer.querySelector("[data-testid='ai-image-download-button']");
+      if (!downloadBtn || !isVisible(downloadBtn)) {
+        return { ready: false, reason: "image download affordance not rendered" };
+      }
 
-    console.error(`[Copilot] result-ready-timeout: Copilot did not produce a resolved image within ${Math.round(timeoutMs / 1_000)}s`);
+      const stopBtn = document.querySelector("button[data-testid='stop-button']");
+      if (stopBtn && isVisible(stopBtn)) {
+        return { ready: false, reason: "stop-button is active" };
+      }
+
+      return {
+        ready: true,
+        reason: "ai-image-message + ai-image-download-button rendered, no stop-button",
+      };
+    }).catch(() => ({ ready: false, reason: "evaluate failed" }));
+
+    if (signals.ready) {
+      console.error(`[Copilot] completion-affordance: ${signals.reason}`);
+    }
+    return signals.ready;
   }
 
-  private async hasGenerationSignals(page: Page, images: CopilotImageCandidate[]): Promise<boolean> {
-    if (images.some((image) => image.blurred)) {
-      return true;
-    }
-
-    const bodyText = await page.locator("body").textContent().catch(() => "") ?? "";
-    if (/your illustration is ready now/i.test(bodyText)) {
-      return false;
-    }
-    if (/setting up|creating|generating/i.test(bodyText)) {
-      return true;
-    }
-
-    return page.locator("button[aria-label*='Stop'], button[title*='Stop'], button:has-text('Stop')").evaluateAll((nodes) => {
-      return nodes.some((node) => {
-        const element = node as HTMLElement;
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return style.display !== "none"
-          && style.visibility !== "hidden"
-          && style.opacity !== "0"
-          && rect.width > 10
-          && rect.height > 10;
-      });
-    }).catch(() => false);
+  protected override async waitForResultElements(page: Page, timeoutMs = 420_000): Promise<void> {
+    // Delegate to the base-class hook loop. The preCheck runs sign-in
+    // and CAPTCHA detection on every iteration, since those interrupt
+    // generation and must be surfaced as structured errors rather than
+    // silently waiting for an affordance that will never arrive.
+    await this.waitForCompletionAffordance(page, timeoutMs, async (p) => {
+      await this.checkSignInModal(p);
+      await this.checkCaptcha(p);
+    });
   }
 
   protected override async captureResultElements(page: Page, outputDir: string): Promise<string[]> {

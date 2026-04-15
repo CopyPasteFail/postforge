@@ -234,6 +234,68 @@ export class GenericImageToolAdapter implements ToolAdapter {
     // Some sites will need live selector tuning for model or mode switching.
   }
 
+  /**
+   * Tool-specific check that generation is definitively complete.
+   *
+   * MUST rely on stable DOM structure rendered by the tool's own chrome
+   * (action toolbars, status badges, download controls, `aria-busy` flags,
+   * completion affordances) — NEVER on model-authored text. The model can
+   * output any completion phrasing it wants; the tool's chrome is under
+   * the app's control and is the only signal that doesn't drift.
+   *
+   * Scoping rules:
+   * - Prefer signals scoped to the LATEST response/turn, otherwise stale
+   *   action bars from prior turns false-positive on page load.
+   * - Return a binary. Don't rely on N-poll stability — if the affordance
+   *   is real it will be real on the first read.
+   *
+   * Default implementation returns false; each concrete adapter opts in
+   * by overriding. Adapters that still use the legacy
+   * `waitForResultElements` signature-stability path continue to work.
+   */
+  protected async hasCompletionAffordance(_page: Page): Promise<boolean> {
+    return false;
+  }
+
+  /**
+   * Poll `hasCompletionAffordance` until it returns true or the deadline
+   * passes. Adapters should prefer this over the legacy
+   * signature-stability loop in `waitForResultElements`.
+   *
+   * The `preCheck` hook runs before each affordance check — use it for
+   * tool-chrome interrupts (auth modals, CAPTCHA, content-block banners).
+   * Those can still be text-based because those phrasings are written by
+   * the app, not by the model.
+   */
+  protected async waitForCompletionAffordance(
+    page: Page,
+    timeoutMs = 420_000,
+    preCheck?: (page: Page) => Promise<void>,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (preCheck) {
+        await preCheck(page);
+      }
+      if (await this.hasCompletionAffordance(page)) {
+        this.logReady(`Detected tool-native completion affordance`);
+        return true;
+      }
+      await delay(1_000);
+    }
+
+    this.logReadyTimeout(`No completion affordance detected within ${Math.round(timeoutMs / 1_000)}s`);
+    return false;
+  }
+
+  private logReady(detail: string): void {
+    console.error(`[${this.config.name}] result-ready: ${detail}`);
+  }
+
+  private logReadyTimeout(detail: string): void {
+    console.error(`[${this.config.name}] result-ready-timeout: ${detail}`);
+  }
+
   protected async fillPrompt(page: Page, promptText: string): Promise<void> {
     const visibleSelector = await waitForAnySelector(page, this.config.promptSelectors, 20_000);
     if (!visibleSelector) {
