@@ -115,7 +115,6 @@ If link is inaccessible, use the exact fallback line and stop.
 
 ### Turn 2: Final Draft + Revision Loop
 - Build the final post from the selected hook and variation.
-- Convert the selected hook into Unicode Mathematical Sans Bold
 - Apply hashtag logic.
 - If input was a link, append:
   Source: <exact original link>
