@@ -1,5 +1,209 @@
 # Architecture
 
+## Visual Maps
+
+The diagrams below intentionally cover different scopes so you can explain the repo from multiple angles:
+
+- System scope: who activates whom across the host agent, MCP server, orchestration layer, browser layer, and outputs.
+- Tool-routing scope: which MCP tools delegate to which classes and files.
+- Runtime scope: how a single run advances through stages, including auth, polling, retry, skip, and finalize branches.
+- Output scope: which directories and files are created or updated as the run progresses.
+
+The companion browser version lives at `docs/architecture-diagrams.html`.
+
+### 1. System Activation and Delegation
+
+```mermaid
+flowchart LR
+    user[User]
+    host[Host Agent<br/>Codex / Claude / Gemini]
+    skill[skills/postforge/SKILL.md]
+    web[Native reasoning tools<br/>WebSearch / WebFetch]
+
+    server[src/server.ts<br/>MCP server entry point]
+    tools[src/tools/*.ts<br/>MCP tool handlers]
+    resources[src/resources/*.ts<br/>Prompt + config resources]
+    orchestrator[src/orchestrator.ts<br/>OrchestratorAgent]
+
+    state[src/storage/state-store.ts<br/>StateStore]
+    source[src/source/article-source.ts<br/>ArticleSourceService]
+    imageRunner[src/agents/image-runner.ts<br/>ImageRunnerAgent]
+    linkedinPrep[src/agents/linkedin-preparer.ts<br/>LinkedInPreparerAgent]
+
+    adapters[src/playwright/tools/*.ts<br/>ChatGPT / Gemini / AI Studio / Flow / Grok / Copilot / LinkedIn adapters]
+    browser[src/playwright/browser.ts<br/>BrowserService]
+    auth[src/playwright/auth.ts<br/>AuthService]
+    assets[src/storage/assets.ts<br/>AssetStore]
+    manifest[src/review/manifest.ts<br/>ReviewManifestBuilder]
+
+    runJson[(runs/<runId>/run.json)]
+    images[(output/images/<runId>/)]
+    comparisons[(output/comparisons/<runId>/index.html)]
+    profiles[(profiles/<toolId>/)]
+
+    user --> host
+    host --> skill
+    host --> web
+    host --> server
+    host -. reads .-> resources
+
+    server --> tools
+    server --> resources
+    tools --> orchestrator
+
+    orchestrator --> state
+    orchestrator --> source
+    orchestrator --> imageRunner
+    orchestrator --> linkedinPrep
+    orchestrator --> assets
+
+    imageRunner --> adapters
+    imageRunner --> manifest
+    linkedinPrep --> adapters
+
+    adapters --> browser
+    adapters --> auth
+    adapters --> assets
+    browser --> profiles
+
+    state --> runJson
+    assets --> images
+    manifest --> comparisons
+```
+
+### 2. MCP Tool Routing to Components
+
+```mermaid
+flowchart TD
+    subgraph MCP["MCP tools in src/tools/"]
+        start[start_run]
+        submit[submit_approved_copy]
+        generate[generate_image_candidates]
+        ensure[ensure_auth]
+        finalize[finalize_candidates]
+        retry[retry_tool]
+        skip[skip_tool]
+        select[select_image_candidate]
+        prepare[prepare_linkedin_draft]
+        status[get_run]
+        cancel[cancel_run]
+        doctor[doctor]
+    end
+
+    subgraph Orchestrator["src/orchestrator.ts"]
+        startRun[startRun]
+        submitCopy[submitApprovedCopy]
+        genImages[generateImages]
+        finalizeCandidates[finalizeCandidates]
+        clearTool[clearToolAsset]
+        skipTool[skipTool / bypassPendingAuth]
+        pickImage[pickImageByNumber]
+        prepLinkedIn[prepareLinkedIn]
+        statusRun[status]
+        cancelRun[cancelRun]
+    end
+
+    state[src/storage/state-store.ts<br/>StateStore]
+    source[src/source/article-source.ts<br/>ArticleSourceService.fetchFromLink]
+    imageRunner[src/agents/image-runner.ts<br/>ImageRunnerAgent.runAll]
+    auth[src/playwright/auth.ts<br/>AuthService.openAndCheckAuth]
+    selected[src/storage/assets.ts<br/>AssetStore.convertSelectedImage]
+    linkedin[src/agents/linkedin-preparer.ts<br/>LinkedInPreparerAgent.prepare]
+    browser[src/playwright/tools/linkedin.ts<br/>LinkedInAdapter.prepareTextOnly]
+
+    start --> startRun
+    submit --> submitCopy
+    generate --> genImages
+    finalize --> finalizeCandidates
+    retry --> clearTool
+    skip --> skipTool
+    select --> pickImage
+    prepare --> prepLinkedIn
+    status --> statusRun
+    cancel --> cancelRun
+
+    startRun --> state
+    startRun --> source
+    submitCopy --> state
+    genImages --> state
+    genImages --> imageRunner
+    finalizeCandidates --> state
+    clearTool --> state
+    skipTool --> state
+    pickImage --> selected
+    pickImage --> state
+    prepLinkedIn --> linkedin
+    prepLinkedIn --> state
+    ensure --> auth
+    statusRun --> state
+    linkedin --> browser
+```
+
+### 3. Run Lifecycle, Auth Branches, and Control Actions
+
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> awaiting_content_approval: start_run
+
+    awaiting_content_approval --> awaiting_image_generation: submit_approved_copy
+    awaiting_image_generation --> generating_images: generate_image_candidates
+
+    generating_images --> awaiting_auth: auth or CAPTCHA required
+    awaiting_auth --> generating_images: ensure_auth then retry
+    awaiting_auth --> awaiting_image_generation: skip_tool
+
+    generating_images --> awaiting_image_selection: all enabled tools finish
+    generating_images --> awaiting_image_selection: finalize_candidates
+    awaiting_image_selection --> awaiting_image_generation: retry_tool
+
+    awaiting_image_selection --> ready_for_linkedin: select_image_candidate
+    ready_for_linkedin --> awaiting_auth: LinkedIn auth required
+    ready_for_linkedin --> ready_to_post: prepare_linkedin_draft
+
+    ready_to_post --> [*]
+    created --> archived: cancel_run
+    awaiting_content_approval --> archived: cancel_run
+    awaiting_image_generation --> archived: cancel_run
+    generating_images --> archived: cancel_run
+    awaiting_auth --> archived: cancel_run
+    awaiting_image_selection --> archived: cancel_run
+    ready_for_linkedin --> archived: cancel_run
+    archived --> [*]
+```
+
+### 4. Persistent Outputs and File Surfaces
+
+```mermaid
+flowchart LR
+    run[Run ID]
+    state[src/storage/state-store.ts]
+    assets[src/storage/assets.ts]
+    review[src/review/manifest.ts]
+    browser[src/playwright/browser.ts]
+    resources[src/resources/*.ts]
+
+    run --> state
+    run --> assets
+    run --> review
+
+    state --> runjson[runs/<runId>/run.json]
+    assets --> temp[runs/<runId>/image-temp/<toolId>/]
+    assets --> metadata[runs/<runId>/metadata/*.metadata.json]
+    assets --> images[output/images/<runId>/]
+    review --> compare[output/comparisons/<runId>/index.html]
+    browser --> profiles[profiles/<toolId>/]
+    resources --> prompts[prompts/*.md via writer-prompt and news-scout-prompt]
+    resources --> latest[linkedin://runs/latest]
+    resources --> toolconfig[linkedin://config/tools]
+```
+
+### Notes on Scope
+
+- The host agent still owns reasoning, writing, ranking, and user-facing decisions. The MCP server owns execution and persistence.
+- `RunStage` includes a few reserved or older enum values that are not part of the main current path driven by `OrchestratorAgent`; the diagrams above focus on the active runtime flow.
+- `output/linkedin/<runId>/` is provisioned as part of run artifacts, but the current LinkedIn preparation path mainly acts in the browser and opens the selected image folder rather than writing a local draft artifact there.
+
 ## Agent Skill Declaration: Claude Code vs Codex
 
 Both agents read the same skill file (`skills/postforge/SKILL.md`) but discover and register it differently.

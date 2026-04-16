@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Postforge Architecture Diagrams</title>
+    <style>
+      :root {
+        --bg: #f3efe7;
+        --bg-accent: #dfe9f3;
+        --paper: rgba(255, 255, 255, 0.92);
+        --ink: #1b2430;
+        --muted: #566170;
+        --line: rgba(27, 36, 48, 0.12);
+        --blue: #1f6feb;
+        --sand: #d7b98d;
+        --shadow: 0 18px 40px rgba(27, 36, 48, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(215, 185, 141, 0.26), transparent 30%),
+          radial-gradient(circle at top right, rgba(31, 111, 235, 0.12), transparent 28%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-accent) 100%);
+      }
+
+      .page {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 40px 20px 72px;
+      }
+
+      .hero {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.82));
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        padding: 28px 28px 22px;
+        box-shadow: var(--shadow);
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--blue);
+        font-size: 0.85rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(2rem, 4vw, 3.5rem);
+        line-height: 0.98;
+      }
+
+      .hero p {
+        margin: 0;
+        max-width: 76ch;
+        color: var(--muted);
+        font-size: 1.05rem;
+        line-height: 1.6;
+      }
+
+      .legend {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin: 18px 0 0;
+      }
+
+      .legend-card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 14px 16px;
+        background: rgba(255, 255, 255, 0.74);
+      }
+
+      .legend-card strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      section.diagram {
+        margin-top: 24px;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 20px;
+        box-shadow: var(--shadow);
+      }
+
+      section.diagram h2 {
+        margin: 0 0 8px;
+        font-size: 1.5rem;
+      }
+
+      section.diagram p {
+        margin: 0 0 16px;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .mermaid-wrap {
+        overflow-x: auto;
+        padding: 14px;
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(243, 239, 231, 0.72), rgba(255, 255, 255, 0.94));
+        border: 1px solid rgba(27, 36, 48, 0.08);
+      }
+
+      .notes {
+        margin-top: 24px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 14px;
+      }
+
+      .note {
+        background: rgba(255, 255, 255, 0.76);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 14px 16px;
+      }
+
+      .note h3 {
+        margin: 0 0 8px;
+        font-size: 1rem;
+      }
+
+      .note p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      code {
+        padding: 0.1rem 0.38rem;
+        background: rgba(31, 111, 235, 0.08);
+        border-radius: 0.45rem;
+        font-size: 0.94em;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <p class="eyebrow">Postforge Architecture</p>
+        <h1>Activation, Delegation, and Output Surfaces</h1>
+        <p>
+          This page mirrors the Mermaid diagrams in <code>docs/architecture.md</code>, but gives
+          them a cleaner browser presentation for repo walkthroughs, onboarding, and design review.
+        </p>
+        <div class="legend">
+          <div class="legend-card">
+            <strong>System scope</strong>
+            Shows how the host agent activates the MCP server and where execution is delegated.
+          </div>
+          <div class="legend-card">
+            <strong>Tool scope</strong>
+            Maps individual MCP tools to the orchestrator methods and downstream components they trigger.
+          </div>
+          <div class="legend-card">
+            <strong>Runtime scope</strong>
+            Focuses on run stages, auth interruptions, polling, retry, skip, and final posting handoff.
+          </div>
+          <div class="legend-card">
+            <strong>Output scope</strong>
+            Makes the persistent files and directories explicit.
+          </div>
+        </div>
+      </header>
+
+      <section class="diagram">
+        <h2>1. System Activation and Delegation</h2>
+        <p>The host agent keeps the reasoning loop. The MCP server owns execution, persistence, browser automation, and artifact generation.</p>
+        <div class="mermaid-wrap">
+          <pre class="mermaid">
+flowchart LR
+    user[User]
+    host[Host Agent<br/>Codex / Claude / Gemini]
+    skill[skills/postforge/SKILL.md]
+    web[Native reasoning tools<br/>WebSearch / WebFetch]
+
+    server[src/server.ts<br/>MCP server entry point]
+    tools[src/tools/*.ts<br/>MCP tool handlers]
+    resources[src/resources/*.ts<br/>Prompt + config resources]
+    orchestrator[src/orchestrator.ts<br/>OrchestratorAgent]
+
+    state[src/storage/state-store.ts<br/>StateStore]
+    source[src/source/article-source.ts<br/>ArticleSourceService]
+    imageRunner[src/agents/image-runner.ts<br/>ImageRunnerAgent]
+    linkedinPrep[src/agents/linkedin-preparer.ts<br/>LinkedInPreparerAgent]
+
+    adapters[src/playwright/tools/*.ts<br/>ChatGPT / Gemini / AI Studio / Flow / Grok / Copilot / LinkedIn adapters]
+    browser[src/playwright/browser.ts<br/>BrowserService]
+    auth[src/playwright/auth.ts<br/>AuthService]
+    assets[src/storage/assets.ts<br/>AssetStore]
+    manifest[src/review/manifest.ts<br/>ReviewManifestBuilder]
+
+    runJson[(runs/&lt;runId&gt;/run.json)]
+    images[(output/images/&lt;runId&gt;/)]
+    comparisons[(output/comparisons/&lt;runId&gt;/index.html)]
+    profiles[(profiles/&lt;toolId&gt;/)]
+
+    user --> host
+    host --> skill
+    host --> web
+    host --> server
+    host -. reads .-> resources
+
+    server --> tools
+    server --> resources
+    tools --> orchestrator
+
+    orchestrator --> state
+    orchestrator --> source
+    orchestrator --> imageRunner
+    orchestrator --> linkedinPrep
+    orchestrator --> assets
+
+    imageRunner --> adapters
+    imageRunner --> manifest
+    linkedinPrep --> adapters
+
+    adapters --> browser
+    adapters --> auth
+    adapters --> assets
+    browser --> profiles
+
+    state --> runJson
+    assets --> images
+    manifest --> comparisons
+          </pre>
+        </div>
+      </section>
+
+      <section class="diagram">
+        <h2>2. MCP Tool Routing to Components</h2>
+        <p>The tool handlers are intentionally thin. Most of them validate inputs, call the orchestrator, and return the standard envelope with <code>allowed_actions</code>.</p>
+        <div class="mermaid-wrap">
+          <pre class="mermaid">
+flowchart TD
+    subgraph MCP["MCP tools in src/tools/"]
+        start[start_run]
+        submit[submit_approved_copy]
+        generate[generate_image_candidates]
+        ensure[ensure_auth]
+        finalize[finalize_candidates]
+        retry[retry_tool]
+        skip[skip_tool]
+        select[select_image_candidate]
+        prepare[prepare_linkedin_draft]
+        status[get_run]
+        cancel[cancel_run]
+        doctor[doctor]
+    end
+
+    subgraph Orchestrator["src/orchestrator.ts"]
+        startRun[startRun]
+        submitCopy[submitApprovedCopy]
+        genImages[generateImages]
+        finalizeCandidates[finalizeCandidates]
+        clearTool[clearToolAsset]
+        skipTool[skipTool / bypassPendingAuth]
+        pickImage[pickImageByNumber]
+        prepLinkedIn[prepareLinkedIn]
+        statusRun[status]
+        cancelRun[cancelRun]
+    end
+
+    state[src/storage/state-store.ts<br/>StateStore]
+    source[src/source/article-source.ts<br/>ArticleSourceService.fetchFromLink]
+    imageRunner[src/agents/image-runner.ts<br/>ImageRunnerAgent.runAll]
+    auth[src/playwright/auth.ts<br/>AuthService.openAndCheckAuth]
+    selected[src/storage/assets.ts<br/>AssetStore.convertSelectedImage]
+    linkedin[src/agents/linkedin-preparer.ts<br/>LinkedInPreparerAgent.prepare]
+    browser[src/playwright/tools/linkedin.ts<br/>LinkedInAdapter.prepareTextOnly]
+
+    start --> startRun
+    submit --> submitCopy
+    generate --> genImages
+    finalize --> finalizeCandidates
+    retry --> clearTool
+    skip --> skipTool
+    select --> pickImage
+    prepare --> prepLinkedIn
+    status --> statusRun
+    cancel --> cancelRun
+
+    startRun --> state
+    startRun --> source
+    submitCopy --> state
+    genImages --> state
+    genImages --> imageRunner
+    finalizeCandidates --> state
+    clearTool --> state
+    skipTool --> state
+    pickImage --> selected
+    pickImage --> state
+    prepLinkedIn --> linkedin
+    prepLinkedIn --> state
+    ensure --> auth
+    statusRun --> state
+    linkedin --> browser
+          </pre>
+        </div>
+      </section>
+
+      <section class="diagram">
+        <h2>3. Run Lifecycle, Auth Branches, and Control Actions</h2>
+        <p>This view emphasizes what can interrupt or redirect a run after image generation starts.</p>
+        <div class="mermaid-wrap">
+          <pre class="mermaid">
+stateDiagram-v2
+    [*] --> created
+    created --> awaiting_content_approval: start_run
+
+    awaiting_content_approval --> awaiting_image_generation: submit_approved_copy
+    awaiting_image_generation --> generating_images: generate_image_candidates
+
+    generating_images --> awaiting_auth: auth or CAPTCHA required
+    awaiting_auth --> generating_images: ensure_auth then retry
+    awaiting_auth --> awaiting_image_generation: skip_tool
+
+    generating_images --> awaiting_image_selection: all enabled tools finish
+    generating_images --> awaiting_image_selection: finalize_candidates
+    awaiting_image_selection --> awaiting_image_generation: retry_tool
+
+    awaiting_image_selection --> ready_for_linkedin: select_image_candidate
+    ready_for_linkedin --> awaiting_auth: LinkedIn auth required
+    ready_for_linkedin --> ready_to_post: prepare_linkedin_draft
+
+    ready_to_post --> [*]
+    created --> archived: cancel_run
+    awaiting_content_approval --> archived: cancel_run
+    awaiting_image_generation --> archived: cancel_run
+    generating_images --> archived: cancel_run
+    awaiting_auth --> archived: cancel_run
+    awaiting_image_selection --> archived: cancel_run
+    ready_for_linkedin --> archived: cancel_run
+    archived --> [*]
+          </pre>
+        </div>
+      </section>
+
+      <section class="diagram">
+        <h2>4. Persistent Outputs and File Surfaces</h2>
+        <p>This isolates the file and resource surfaces so it is obvious what lives in the run directory, what becomes shared output, and what stays in browser profiles.</p>
+        <div class="mermaid-wrap">
+          <pre class="mermaid">
+flowchart LR
+    run[Run ID]
+    state[src/storage/state-store.ts]
+    assets[src/storage/assets.ts]
+    review[src/review/manifest.ts]
+    browser[src/playwright/browser.ts]
+    resources[src/resources/*.ts]
+
+    run --> state
+    run --> assets
+    run --> review
+
+    state --> runjson[runs/&lt;runId&gt;/run.json]
+    assets --> temp[runs/&lt;runId&gt;/image-temp/&lt;toolId&gt;/]
+    assets --> metadata[runs/&lt;runId&gt;/metadata/*.metadata.json]
+    assets --> images[output/images/&lt;runId&gt;/]
+    review --> compare[output/comparisons/&lt;runId&gt;/index.html]
+    browser --> profiles[profiles/&lt;toolId&gt;/]
+    resources --> prompts[prompts/*.md via writer-prompt and news-scout-prompt]
+    resources --> latest[linkedin://runs/latest]
+    resources --> toolconfig[linkedin://config/tools]
+          </pre>
+        </div>
+      </section>
+
+      <section class="notes">
+        <article class="note">
+          <h3>Host vs server</h3>
+          <p>The host agent still owns ranking, copywriting, and user-facing choices. The server owns tool execution, persistence, and browser automation.</p>
+        </article>
+        <article class="note">
+          <h3>Current runtime path</h3>
+          <p><code>RunStage</code> includes a few reserved or older values, but the diagrams above focus on the stages actively driven by <code>OrchestratorAgent</code>.</p>
+        </article>
+        <article class="note">
+          <h3>LinkedIn output nuance</h3>
+          <p><code>output/linkedin/&lt;runId&gt;/</code> is provisioned with the run, but the active LinkedIn path mainly operates in the browser and opens the image folder for manual attachment.</p>
+        </article>
+      </section>
+    </main>
+
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+      mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: "loose",
+        theme: "base",
+        themeVariables: {
+          primaryColor: "#f6efe7",
+          primaryTextColor: "#1b2430",
+          primaryBorderColor: "#d7b98d",
+          lineColor: "#5d6776",
+          secondaryColor: "#e6eef7",
+          tertiaryColor: "#fffdf8",
+          clusterBkg: "#ffffff",
+          clusterBorder: "#d9dde3",
+          fontFamily: "Georgia, Times New Roman, serif"
+        }
+      });
+    </script>
+  </body>
+</html>
