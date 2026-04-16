@@ -4,6 +4,8 @@
 
 The diagrams below intentionally cover different scopes so you can explain the repo from multiple angles:
 
+- Simple end-to-end scope: one compact pipeline from skill start through news discovery, writing, image generation, and LinkedIn draft prep.
+- Swimlane scope: the same story, but grouped by who is acting at each step.
 - System scope: who activates whom across the host agent, MCP server, orchestration layer, browser layer, and outputs.
 - Tool-routing scope: which MCP tools delegate to which classes and files.
 - Runtime scope: how a single run advances through stages, including auth, polling, retry, skip, and finalize branches.
@@ -11,7 +13,62 @@ The diagrams below intentionally cover different scopes so you can explain the r
 
 The companion browser version lives at `docs/architecture-diagrams.html`.
 
-### 1. System Activation and Delegation
+### Overview
+
+#### 1. Simple End-to-End Pipeline
+
+```mermaid
+flowchart LR
+    start["Start the post workflow<br/><sub>skills/postforge/SKILL.md</sub>"]
+    discover["Find news worth posting about<br/><sub>Host agent + WebSearch/WebFetch + src/resources/news-scout-prompt.ts</sub>"]
+    chooseStory["Pick one story to develop<br/><sub>User + host agent</sub>"]
+    write["Draft the post and image prompt<br/><sub>Host agent + src/resources/writer-prompt.ts</sub>"]
+    saveRun["Create and update the pipeline run<br/><sub>src/tools/start-run.ts + src/tools/submit-approved-copy.ts + src/orchestrator.ts</sub>"]
+    images["Generate image candidates across tools<br/><sub>src/agents/image-runner.ts + src/playwright/tools/*.ts</sub>"]
+    select["Choose the final image<br/><sub>src/tools/select-image-candidate.ts + src/storage/assets.ts</sub>"]
+    linkedin["Prepare the LinkedIn draft<br/><sub>src/agents/linkedin-preparer.ts + src/playwright/tools/linkedin.ts</sub>"]
+    post["Post manually in LinkedIn<br/><sub>User action</sub>"]
+
+    start --> discover --> chooseStory --> write --> saveRun --> images --> select --> linkedin --> post
+```
+
+#### 2. Swimlane View by Actor
+
+```mermaid
+flowchart TB
+    subgraph U["User"]
+        u1["Start the skill<br/><sub>Trigger skills/postforge/SKILL.md</sub>"]
+        u2["Pick a story<br/><sub>Choose the ranked news item</sub>"]
+        u3["Approve the draft<br/><sub>Confirm post text and image direction</sub>"]
+        u4["Pick an image<br/><sub>Choose a candidate or variant</sub>"]
+        u5["Post manually<br/><sub>Final click happens in LinkedIn</sub>"]
+    end
+
+    subgraph H["Host Agent"]
+        h1["Discover and rank news<br/><sub>WebSearch/WebFetch + src/resources/news-scout-prompt.ts</sub>"]
+        h2["Write the post and image prompt<br/><sub>src/resources/writer-prompt.ts</sub>"]
+        h3["Present candidates and next actions<br/><sub>Follows allowed_actions from MCP responses</sub>"]
+    end
+
+    subgraph M["MCP Server"]
+        m1["Create and persist the run<br/><sub>src/tools/start-run.ts + src/orchestrator.ts + src/storage/state-store.ts</sub>"]
+        m2["Store approved copy<br/><sub>src/tools/submit-approved-copy.ts</sub>"]
+        m3["Orchestrate image generation<br/><sub>src/tools/generate-image-candidates.ts + src/agents/image-runner.ts</sub>"]
+        m4["Record selected image<br/><sub>src/tools/select-image-candidate.ts + src/storage/assets.ts</sub>"]
+        m5["Prepare LinkedIn draft<br/><sub>src/tools/prepare-linkedin-draft.ts + src/agents/linkedin-preparer.ts</sub>"]
+    end
+
+    subgraph B["Browser Tools"]
+        b1["Generate images in external tools<br/><sub>src/playwright/tools/chatgpt.ts, gemini.ts, ai-studio.ts, flow.ts, copilot.ts</sub>"]
+        b2["Open LinkedIn composer and save draft<br/><sub>src/playwright/tools/linkedin.ts</sub>"]
+    end
+
+    u1 --> h1 --> u2 --> h2 --> m1 --> u3 --> m2 --> m3 --> b1 --> h3 --> u4 --> m4 --> m5 --> b2 --> u5
+```
+
+### Architecture
+
+#### 3. System Activation and Delegation
 
 ```mermaid
 flowchart LR
@@ -71,7 +128,7 @@ flowchart LR
     manifest --> comparisons
 ```
 
-### 2. MCP Tool Routing to Components
+#### 4. MCP Tool Routing to Components
 
 ```mermaid
 flowchart TD
@@ -139,7 +196,9 @@ flowchart TD
     linkedin --> browser
 ```
 
-### 3. Run Lifecycle, Auth Branches, and Control Actions
+### Runtime and State
+
+#### 5. Run Lifecycle, Auth Branches, and Control Actions
 
 ```mermaid
 stateDiagram-v2
@@ -172,7 +231,7 @@ stateDiagram-v2
     archived --> [*]
 ```
 
-### 4. Persistent Outputs and File Surfaces
+#### 6. Persistent Outputs and File Surfaces
 
 ```mermaid
 flowchart LR

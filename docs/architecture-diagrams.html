@@ -157,6 +157,14 @@
         </p>
         <div class="legend">
           <div class="legend-card">
+            <strong>Simple scope</strong>
+            A single compact pipeline for readers who just want the end-to-end story in plain language.
+          </div>
+          <div class="legend-card">
+            <strong>Swimlane scope</strong>
+            The same end-to-end story, but organized by actor so delegation is obvious.
+          </div>
+          <div class="legend-card">
             <strong>System scope</strong>
             Shows how the host agent activates the MCP server and where execution is delegated.
           </div>
@@ -176,7 +184,76 @@
       </header>
 
       <section class="diagram">
-        <h2>1. System Activation and Delegation</h2>
+        <h2>Overview</h2>
+        <p>The first two diagrams are the fastest way to understand the repo: first the story, then who owns each step.</p>
+      </section>
+
+      <section class="diagram">
+        <h2>1. Simple End-to-End Pipeline</h2>
+        <p>This is the quickest way to explain the product flow: plain language first, with the real files and classes tucked into each step.</p>
+        <div class="mermaid-wrap">
+          <pre class="mermaid">
+flowchart LR
+    start["Start the post workflow<br/><sub>skills/postforge/SKILL.md</sub>"]
+    discover["Find news worth posting about<br/><sub>Host agent + WebSearch/WebFetch + src/resources/news-scout-prompt.ts</sub>"]
+    chooseStory["Pick one story to develop<br/><sub>User + host agent</sub>"]
+    write["Draft the post and image prompt<br/><sub>Host agent + src/resources/writer-prompt.ts</sub>"]
+    saveRun["Create and update the pipeline run<br/><sub>src/tools/start-run.ts + src/tools/submit-approved-copy.ts + src/orchestrator.ts</sub>"]
+    images["Generate image candidates across tools<br/><sub>src/agents/image-runner.ts + src/playwright/tools/*.ts</sub>"]
+    select["Choose the final image<br/><sub>src/tools/select-image-candidate.ts + src/storage/assets.ts</sub>"]
+    linkedin["Prepare the LinkedIn draft<br/><sub>src/agents/linkedin-preparer.ts + src/playwright/tools/linkedin.ts</sub>"]
+    post["Post manually in LinkedIn<br/><sub>User action</sub>"]
+
+    start --> discover --> chooseStory --> write --> saveRun --> images --> select --> linkedin --> post
+          </pre>
+        </div>
+      </section>
+
+      <section class="diagram">
+        <h2>2. Swimlane View by Actor</h2>
+        <p>This version keeps the language simple but groups each step by who is acting: the user, the host agent, the MCP server, or browser automation.</p>
+        <div class="mermaid-wrap">
+          <pre class="mermaid">
+flowchart TB
+    subgraph U["User"]
+        u1["Start the skill<br/><sub>Trigger skills/postforge/SKILL.md</sub>"]
+        u2["Pick a story<br/><sub>Choose the ranked news item</sub>"]
+        u3["Approve the draft<br/><sub>Confirm post text and image direction</sub>"]
+        u4["Pick an image<br/><sub>Choose a candidate or variant</sub>"]
+        u5["Post manually<br/><sub>Final click happens in LinkedIn</sub>"]
+    end
+
+    subgraph H["Host Agent"]
+        h1["Discover and rank news<br/><sub>WebSearch/WebFetch + src/resources/news-scout-prompt.ts</sub>"]
+        h2["Write the post and image prompt<br/><sub>src/resources/writer-prompt.ts</sub>"]
+        h3["Present candidates and next actions<br/><sub>Follows allowed_actions from MCP responses</sub>"]
+    end
+
+    subgraph M["MCP Server"]
+        m1["Create and persist the run<br/><sub>src/tools/start-run.ts + src/orchestrator.ts + src/storage/state-store.ts</sub>"]
+        m2["Store approved copy<br/><sub>src/tools/submit-approved-copy.ts</sub>"]
+        m3["Orchestrate image generation<br/><sub>src/tools/generate-image-candidates.ts + src/agents/image-runner.ts</sub>"]
+        m4["Record selected image<br/><sub>src/tools/select-image-candidate.ts + src/storage/assets.ts</sub>"]
+        m5["Prepare LinkedIn draft<br/><sub>src/tools/prepare-linkedin-draft.ts + src/agents/linkedin-preparer.ts</sub>"]
+    end
+
+    subgraph B["Browser Tools"]
+        b1["Generate images in external tools<br/><sub>src/playwright/tools/chatgpt.ts, gemini.ts, ai-studio.ts, flow.ts, copilot.ts</sub>"]
+        b2["Open LinkedIn composer and save draft<br/><sub>src/playwright/tools/linkedin.ts</sub>"]
+    end
+
+    u1 --> h1 --> u2 --> h2 --> m1 --> u3 --> m2 --> m3 --> b1 --> h3 --> u4 --> m4 --> m5 --> b2 --> u5
+          </pre>
+        </div>
+      </section>
+
+      <section class="diagram">
+        <h2>Architecture</h2>
+        <p>These diagrams move from the user-facing story into the main internal structure and delegation boundaries.</p>
+      </section>
+
+      <section class="diagram">
+        <h2>3. System Activation and Delegation</h2>
         <p>The host agent keeps the reasoning loop. The MCP server owns execution, persistence, browser automation, and artifact generation.</p>
         <div class="mermaid-wrap">
           <pre class="mermaid">
@@ -240,7 +317,7 @@ flowchart LR
       </section>
 
       <section class="diagram">
-        <h2>2. MCP Tool Routing to Components</h2>
+        <h2>4. MCP Tool Routing to Components</h2>
         <p>The tool handlers are intentionally thin. Most of them validate inputs, call the orchestrator, and return the standard envelope with <code>allowed_actions</code>.</p>
         <div class="mermaid-wrap">
           <pre class="mermaid">
@@ -312,7 +389,12 @@ flowchart TD
       </section>
 
       <section class="diagram">
-        <h2>3. Run Lifecycle, Auth Branches, and Control Actions</h2>
+        <h2>Runtime and State</h2>
+        <p>These last diagrams focus on state progression and the file surfaces that persist the run.</p>
+      </section>
+
+      <section class="diagram">
+        <h2>5. Run Lifecycle, Auth Branches, and Control Actions</h2>
         <p>This view emphasizes what can interrupt or redirect a run after image generation starts.</p>
         <div class="mermaid-wrap">
           <pre class="mermaid">
@@ -349,7 +431,7 @@ stateDiagram-v2
       </section>
 
       <section class="diagram">
-        <h2>4. Persistent Outputs and File Surfaces</h2>
+        <h2>6. Persistent Outputs and File Surfaces</h2>
         <p>This isolates the file and resource surfaces so it is obvious what lives in the run directory, what becomes shared output, and what stays in browser profiles.</p>
         <div class="mermaid-wrap">
           <pre class="mermaid">
