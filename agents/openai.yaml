@@ -1,11 +1,11 @@
-name: linkedin-post
+name: postforge
 description: >
   Full LinkedIn post creation and publishing pipeline. Discovers topics,
   writes posts in a specific voice, generates images across multiple AI tools,
   and prepares LinkedIn drafts via browser automation.
 
 skills:
-  - path: skills/linkedin-post/SKILL.md
+  - path: skills/postforge/SKILL.md
 
 mcp:
   - name: linkedin-post-agent

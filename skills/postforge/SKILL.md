@@ -1,5 +1,5 @@
 ---
-name: linkedin-post
+name: postforge
 description: "Use when the user wants to write, create, draft, or publish a LinkedIn post, turn an article or idea into a LinkedIn post, generate images, or run the full post pipeline."
 ---
 
@@ -11,6 +11,14 @@ This skill owns all reasoning (writing, prompting, deciding). The `linkedin-post
 
 **Hard rule: the server never posts. Only the user clicks Post.**
 
+## Session Start
+
+Before beginning any pipeline run:
+1. Call `doctor` to confirm the MCP server is reachable and the environment is healthy.
+   - If the server is not found, tell the user to run `install.sh` (or `install.ps1` on Windows) from the repo root and restart the agent.
+2. If `doctor` reports a failure, resolve it before proceeding.
+3. If `doctor` reports missing auth for any tool the user plans to use, call `ensure_auth` for that tool first.
+
 ---
 
 ## Phase 0: News Discovery (optional)
@@ -21,21 +29,67 @@ Enter this phase when the user asks to find a topic, run a news scout, or says s
 
 ### Discovery Flow
 
-**Step 1: Fetch the scout prompt**
-Read the MCP resource `linkedin://prompts/news-scout` from the `linkedin-post-agent` server. This returns the full news scout system prompt with ranking criteria, source priorities, and output format.
+**Step 1: Execute the scout**
+Use web search and web fetch to scan sources. If the user does not specify a trigger type, default to "Run Daily Update" (last 24 hours).
 
-**Step 2: Execute the scout**
-Follow the instructions in the returned prompt exactly. Use web search and web fetch capabilities to scan sources. The prompt specifies:
-- Date ranges based on trigger type (weekly/daily/breaking)
-- Source priority (official blogs, GitHub releases, credible AI news sites)
-- Signal filtering criteria
-- Ranking score (1-10) based on impact, reach, novelty
-- Brief format for each item
+**Triggers and date ranges**
+- Run Weekly Update: last 7 days
+- Run Daily Update: last 24 hours
+- Run Breaking Update: last 6–12 hours
 
-If the user does not specify a trigger type, default to "Run Daily Update" (last 24 hours).
+**Primary domains to cover**
+1. Foundation models and platforms — OpenAI, Google, Anthropic, Meta, Microsoft, Amazon, Apple
+2. AI agents and automation — tool use, copilots, workflows, RPA replacements, autonomous systems
+3. Developer and infrastructure tooling — SDKs, APIs, inference stacks, orchestration, evals, deployment
+4. Enterprise and applied AI — SaaS integrations, vertical AI, productivity, security, compliance
+5. Policy, standards, and economics — regulation, compute, pricing, licensing, partnerships, funding when relevant
+
+**Source priority**
+- Official company blogs and release notes
+- GitHub releases, READMEs, RFCs, issues from verified orgs
+- Credible AI news sites and technical newsletters
+- X posts only if from founders, core engineers, or official accounts
+
+**Signal filter — include only items that meet at least one of:**
+- Introduces a new capability or removes a real limitation
+- Changes how developers build or deploy
+- Shifts cost, speed, reliability, or control
+- Signals a strategic direction by a major player
+- Establishes or challenges a standard or norm
+
+Avoid incremental PR unless it has second-order impact. Stop selecting new items once additional items do not materially increase signal. Do not pad the list to reach a number.
+
+**Ranking score (1–10)** based on: Impact (how meaningful in practice), Reach (how many builders/companies/users affected), Novelty (genuinely new or clear step-change). Sort by score descending. Top 3 must appear first and be clearly marked.
+
+**Step 2: Brief each item**
+For each selected item produce a concise brief in exactly this structure:
+
+#### [Ranking Score: X/10]
+
+**Title**
+One clear sentence. No hype.
+
+**What happened**
+2–3 factual sentences. What was released, announced, or changed.
+
+**Why it matters**
+1–2 sentences. The practical implication or shift.
+
+**Who should care**
+Short list: devs, founders, product, infra, enterprise, regulators, etc.
+
+**What to verify / read**
+Key link(s) only. No link dumping.
+
+**Tag(s)**
+Choose 1–3: models, agents, infra, devtools, enterprise, policy, economics
+
+Label uncertainty explicitly as **Open question:** or **Possible implication:** where needed.
+
+**Output rules:** numbered list sorted by score, no emojis, no em dashes, no opinions, no CTA, no post writing.
 
 **Step 3: Present candidates**
-Show the ranked results to the user using the exact brief format from the scout prompt. Ask: "Which story do you want to turn into a LinkedIn post? Pick a number, or give me a different link/idea."
+Show the ranked briefs to the user. Ask: "Which story do you want to turn into a LinkedIn post? Pick a number, or give me a different link/idea."
 
 **Step 4: Transition to Phase 1**
 Once the user picks a story, take that story's link/title as the input and proceed to Phase 1.
@@ -131,7 +185,6 @@ If link is inaccessible, use the exact fallback line and stop. The `run_id` from
 ## Turn 2: Final Draft + Revision Loop
 
 - Build the final post from the selected hook and variation.
-- Convert the selected hook into Unicode Mathematical Sans Bold.
 - Apply hashtag logic.
 - If input was a link, append: `Source: <exact original link>`
 - Output the post inside a single plain fenced markdown block with no language tag.

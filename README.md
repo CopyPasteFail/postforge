@@ -65,9 +65,9 @@ Add to your Claude Code MCP settings (project `.claude/settings.json` or global 
 
 **Step 2 — Restart Claude Code**
 
-The skill (`skills/linkedin-post/SKILL.md`) and Claude-specific guidance (`CLAUDE.md`) are picked up automatically when Claude Code opens this repo.
+The skill (`skills/postforge/SKILL.md`) and Claude-specific guidance (`CLAUDE.md`) are picked up automatically when Claude Code opens this repo.
 
-If installed as a Claude Code plugin, the skill is also available via the `/linkedin-post` command.
+If installed as a Claude Code plugin, the skill is also available via the `/postforge` command.
 
 **Step 3 — First-run checks** (see checklist below)
 
@@ -106,7 +106,7 @@ If `doctor` reports problems, fix them before continuing.
 Once setup is complete, paste this into your agent to start a run:
 
 ```
-Use the linkedin-post skill from postforge.
+Use the postforge skill.
 
 First run doctor. Then run ensure_auth for linkedin and for any image tools
 you have enabled. After both pass, follow the skill workflow exactly.
@@ -119,34 +119,15 @@ Never click Post automatically — stop at the ready_to_post stage and confirm w
 
 ## How the Repo is Wired
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Shared (both agents)                  │
-│                                                         │
-│  skills/linkedin-post/SKILL.md   <- workflow brain      │
-│  src/ -> dist/server.js          <- MCP server          │
-│  prompts/                        <- writer & scout      │
-└─────────────────────────────────────────────────────────┘
-
-┌──────────────────────┐    ┌──────────────────────┐
-│     Claude Code      │    │        Codex         │
-│                      │    │                      │
-│  reads: CLAUDE.md    │    │  reads: AGENTS.md    │
-│  skill auto-loaded   │    │  reads: openai.yaml  │
-│  from skills/ dir    │    │  skill from skills/  │
-│                      │    │  MCP from yaml decl  │
-│  MCP: settings.json  │    │  MCP: config.toml    │
-└──────────────────────┘    └──────────────────────┘
-```
-
 | Layer | File(s) | Who reads it |
 |-------|---------|-------------|
-| **Shared workflow** | `skills/linkedin-post/SKILL.md` | Both agents |
+| **Shared workflow** | `skills/postforge/SKILL.md` | Both agents |
 | **Shared backend** | `src/` -> `dist/server.js` | Both agents (via MCP) |
-| **Shared prompts** | `prompts/*.md` | MCP server (served as resources) |
 | **Claude guidance** | `CLAUDE.md` | Claude Code only |
 | **Codex guidance** | `AGENTS.md` | Codex only |
 | **Codex metadata** | `agents/openai.yaml` | Codex only |
+
+For a deeper look at how agent wiring differs and how the pipeline call sequence works: [docs/architecture.md](docs/architecture.md)
 
 ---
 
@@ -163,15 +144,6 @@ Never click Post automatically — stop at the ready_to_post stage and confirm w
 | `get_run` | Get full run state |
 | `cancel_run` | Cancel an active run |
 | `doctor` | Run diagnostic checks |
-
-## MCP Resources
-
-| URI | Description |
-|-----|-------------|
-| `linkedin://prompts/writer` | LinkedIn post writer system prompt |
-| `linkedin://prompts/news-scout` | AI news scout prompt |
-| `linkedin://config/tools` | Current tool configuration |
-| `linkedin://runs/latest` | Most recent active run |
 
 ## Pipeline Stages
 

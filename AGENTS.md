@@ -49,8 +49,7 @@ node dist/server.js doctor
 - `src/storage/` -- Run state persistence and image asset management
 - `src/config/` -- Path resolution and tool configurations
 - `src/pipeline/` -- Type definitions and state machine helpers
-- `prompts/` -- Prompt markdown files served as MCP resources (read-only at runtime)
-- `skills/linkedin-post/` -- Shared skill definition for the post pipeline workflow
+- `skills/postforge/` -- Shared skill definition for the post pipeline workflow
 - `agents/openai.yaml` -- Codex skill metadata and MCP dependency declaration
 
 ## Data directory
@@ -100,8 +99,6 @@ Terminal stages: `ready_to_post`, `failed`, `archived`.
 
 - `src/pipeline/types.ts` -- RunStage enum, RunRecord interface, all type definitions
 - `src/config/tools.ts` -- Tool configurations and CSS selectors for each AI tool
-- `prompts/linkedin-writer.md` -- Writer system prompt (served as MCP resource)
-- `prompts/news-scout.md` -- News scout prompt (served as MCP resource)
 - `skills/linkedin-post/SKILL.md` -- Shared skill workflow (the reasoning layer)
 
 ## Versions

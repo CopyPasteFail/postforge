@@ -64,14 +64,17 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
   /**
    * AI Studio renders a `div.turn-footer` inside `ms-chat-turn` ONLY
    * after the turn is sealed (it's Angular `*ngIf`-conditional on the
-   * run being finished). Inside that footer lives a
-   * `span.model-run-time-pill` showing the run duration (e.g. "45.799s")
-   * — that duration can only be measured post-seal, so the pill is the
-   * canonical completion signal. Feedback buttons ("Good response",
-   * "Bad response") and "Rerun this turn" live in the same footer and
-   * would also work, but the pill is language-independent.
+   * run being finished).
    *
-   * Verified live against aistudio.google.com on 2026-04-14.
+   * Previously we relied on `.model-run-time-pill` (a duration badge like
+   * "45.799s") inside that footer, but AI Studio removed it from the UI
+   * in an April 2026 update. The footer now only contains the "Good
+   * response" / "Bad response" feedback buttons (`.response-feedback-button`)
+   * and the "Rerun this turn" button — all of which are Angular-conditional
+   * on the turn being sealed and are therefore equally reliable as a
+   * completion signal.
+   *
+   * Verified live against aistudio.google.com on 2026-04-16.
    *
    * For image-generation mode (Nano Banana) we additionally require a
    * visible image in the last turn; a sealed turn with only text means
@@ -83,12 +86,13 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       const turns = document.querySelectorAll("ms-chat-turn");
       const lastTurn = turns[turns.length - 1];
       if (!lastTurn) return false;
-      // The pill is added by Angular *ngIf once the run is done. Its
-      // mere presence is the completion signal — no need to read text.
-      return !!lastTurn.querySelector(".turn-footer .model-run-time-pill");
+      // Feedback buttons (.response-feedback-button) are rendered by Angular
+      // *ngIf only once the turn is fully sealed — their presence is the
+      // canonical completion signal after the model-run-time-pill was removed.
+      return !!lastTurn.querySelector(".turn-footer .response-feedback-button");
     }).catch(() => false);
     if (sealed) {
-      console.error(`[${this.config.name}] completion-affordance: .model-run-time-pill present on last turn`);
+      console.error(`[${this.config.name}] completion-affordance: .response-feedback-button present in turn-footer of last turn`);
     }
     return sealed;
   }
@@ -391,6 +395,7 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       "button:has-text('Download')",
     ];
 
+    // First pass — check without hover (button may already be visible).
     for (const selector of selectors) {
       const globalButton = page.locator(selector).first();
       if (await globalButton.isVisible().catch(() => false)) {
@@ -398,8 +403,17 @@ class AiStudioToolAdapter extends GenericImageToolAdapter {
       }
     }
 
+    // AI Studio hides the download button behind a hover overlay.
+    // Hover the image, wait for the overlay to appear, then retry.
     await image.hover().catch(() => undefined);
-    await delay(500);
+    await delay(800);
+
+    for (const selector of selectors) {
+      const globalButton = page.locator(selector).first();
+      if (await globalButton.isVisible().catch(() => false)) {
+        return globalButton;
+      }
+    }
 
     return undefined;
   }

@@ -208,6 +208,13 @@ export class GenericImageToolAdapter implements ToolAdapter {
         this._keepBrowserOpen = true;
         this.keptOpenContext = context;
         this.logStep("captcha-keep-open", "CAPTCHA detected — browser stays open for user to complete it.");
+      } else if (error instanceof AuthRequiredError) {
+        // Keep the browser open so the user can log in without losing session
+        // state. On the next generate() call the context will be reused via
+        // keptOpenContext, just like the CAPTCHA path.
+        this._keepBrowserOpen = true;
+        this.keptOpenContext = context;
+        this.logStep("auth-keep-open", "Auth required — browser stays open for user to log in.");
       }
       throw error;
     } finally {
