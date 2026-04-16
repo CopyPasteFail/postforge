@@ -57,9 +57,22 @@ class ChatGptToolAdapter extends GenericImageToolAdapter {
         return { ready: false, reason: "stop-button is active" };
       }
 
+      // The image chrome can render before the image bytes are decoded. If we
+      // proceed while naturalWidth is 0, the download/screenshot fallbacks all
+      // produce empty artifacts. Require at least one decoded generated image
+      // in the last turn before declaring completion.
+      const images = Array.from(lastTurn.querySelectorAll<HTMLImageElement>("img[alt^='Generated image' i]"));
+      const fallbackImages = images.length > 0
+        ? images
+        : Array.from(lastTurn.querySelectorAll<HTMLImageElement>("img"));
+      const decoded = fallbackImages.find((img) => img.complete && (img.naturalWidth ?? 0) > 0);
+      if (!decoded) {
+        return { ready: false, reason: "generated image has not finished decoding yet" };
+      }
+
       return {
         ready: true,
-        reason: "last turn has good+bad-image-turn-action-button, no loading state, no stop-button",
+        reason: "last turn has good+bad-image-turn-action-button, no loading state, no stop-button, image decoded",
       };
     }).catch(() => ({ ready: false, reason: "evaluate failed" }));
 
@@ -149,10 +162,16 @@ class ChatGptToolAdapter extends GenericImageToolAdapter {
 
     const lastTurn = turnLocator.nth(turnCount - 1);
 
+    const isDecoded = async (loc: Locator): Promise<boolean> =>
+      loc.evaluate((element) => {
+        const img = element as HTMLImageElement;
+        return img.complete && (img.naturalWidth ?? 0) > 0;
+      }).catch(() => false);
+
     const altMatch = lastTurn.locator("img[alt*='Generated image' i]").first();
     if ((await altMatch.count().catch(() => 0)) > 0 && (await altMatch.isVisible().catch(() => false))) {
       const box = await altMatch.boundingBox().catch(() => null);
-      if (box && box.width >= 200 && box.height >= 200) {
+      if (box && box.width >= 200 && box.height >= 200 && (await isDecoded(altMatch))) {
         return altMatch;
       }
     }
@@ -160,7 +179,7 @@ class ChatGptToolAdapter extends GenericImageToolAdapter {
     const fallback = lastTurn.locator("img").first();
     if ((await fallback.count().catch(() => 0)) > 0 && (await fallback.isVisible().catch(() => false))) {
       const box = await fallback.boundingBox().catch(() => null);
-      if (box && box.width >= 200 && box.height >= 200) {
+      if (box && box.width >= 200 && box.height >= 200 && (await isDecoded(fallback))) {
         return fallback;
       }
     }

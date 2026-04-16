@@ -151,8 +151,11 @@ export class LinkedInAdapter {
   }
 
   private async reachTextComposer(page: Page): Promise<void> {
+    const seenStates: LinkedInComposerState[] = [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const state = await this.detectComposerState(page);
+      seenStates.push(state);
+      console.error(`[LinkedIn] composer-state attempt=${attempt + 1} state=${state} url=${page.url()}`);
       if (state === "final-composer" || state === "compose") {
         return;
       }
@@ -163,11 +166,15 @@ export class LinkedInAdapter {
         continue;
       }
 
-      await this.openComposer(page);
+      try {
+        await this.openComposer(page);
+      } catch (err) {
+        console.error(`[LinkedIn] composer-open-failed attempt=${attempt + 1}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       await delay(2_000);
     }
 
-    throw new Error("Could not reach the LinkedIn text composer.");
+    throw new Error(`Could not reach the LinkedIn text composer. States seen: [${seenStates.join(", ")}].`);
   }
 
   private async uploadImage(page: Page, imagePath: string): Promise<void> {
@@ -310,17 +317,25 @@ export class LinkedInAdapter {
   }
 
   private async waitForComposerSurface(page: Page, timeoutMs: number): Promise<boolean> {
-    // The compose dialog lives inside an open Shadow DOM (#interop-outlet).
-    // Playwright pierces shadow DOM, but we use specific selectors to avoid
-    // matching the hidden video-player dialogs in the light DOM.
+    // The compose dialog lives inside an open Shadow DOM (#interop-outlet),
+    // while hidden video-player dialogs (vjs-modal-dialog) exist in the light DOM.
+    // Playwright pierces open shadow roots for plain selectors, so we match on
+    // the composer-unique textbox aria-label and also accept a visible Dismiss
+    // button as a positive signal (rejecting the invisible light-DOM ones).
     const dialogSelector = await waitForAnySelector(page, [
       "div[role='textbox'][aria-label='Text editor for creating content']",
       "div.ql-editor[contenteditable='true'][role='textbox']",
       "button:has-text('Post')",
-      "div[role='dialog'] button[aria-label='Dismiss']",
     ], timeoutMs);
 
-    return Boolean(dialogSelector);
+    if (dialogSelector) {
+      return true;
+    }
+
+    // Fallback: any visible Dismiss button belongs to the composer (the light
+    // DOM copies are always hidden).
+    const dismiss = page.locator("button[aria-label='Dismiss']:visible").first();
+    return (await dismiss.count().catch(() => 0)) > 0;
   }
 
   private async hasAttachedMedia(page: Page): Promise<boolean> {
@@ -359,10 +374,14 @@ export class LinkedInAdapter {
   }
 
   private async waitForComposerTextSelector(page: Page, timeoutMs: number): Promise<string | undefined> {
-    const dialogSelectors = linkedInConfig.textAreaSelectors.map((selector) => `div[role='dialog'] ${selector}`);
-    const dialogMatch = await waitForAnySelector(page, dialogSelectors, timeoutMs);
-    if (dialogMatch) {
-      return dialogMatch;
+    // The composer textbox lives in #interop-outlet's shadow DOM. Descendant
+    // combinators across shadow boundaries are unreliable, so we match directly
+    // on the composer-unique aria-label/class + a :visible filter to avoid any
+    // detached textboxes from prior dialogs.
+    const visibleSelectors = linkedInConfig.textAreaSelectors.map((selector) => `${selector}:visible`);
+    const visibleMatch = await waitForAnySelector(page, visibleSelectors, timeoutMs);
+    if (visibleMatch) {
+      return visibleMatch;
     }
 
     return waitForAnySelector(page, linkedInConfig.textAreaSelectors, Math.min(timeoutMs, 5_000));
@@ -395,17 +414,24 @@ export class LinkedInAdapter {
   }
 
   private async hasVisibleDialog(page: Page): Promise<boolean> {
-    // The compose dialog lives in an open Shadow DOM.  Playwright pierces it,
-    // but there are also hidden video-player dialogs in the light DOM that
-    // would match first.  Look for the Dismiss button unique to the compose dialog.
-    const composeIndicator = page.locator("div[role='dialog'] button[aria-label='Dismiss']").first();
-    if ((await composeIndicator.count()) > 0 && (await composeIndicator.isVisible().catch(() => false))) {
+    // The compose dialog lives in an open Shadow DOM while hidden video.js
+    // modals live in the light DOM. Descendant combinators across shadow
+    // boundaries are unreliable, so we look for composer-unique signals:
+    // a visible Dismiss button or a visible composer textbox.
+    const dismiss = page.locator("button[aria-label='Dismiss']:visible").first();
+    if ((await dismiss.count().catch(() => 0)) > 0) {
       return true;
     }
 
-    // Fallback: check for a visible textbox inside any dialog.
-    const textbox = page.locator("div[role='dialog'] div[role='textbox']").first();
-    return (await textbox.count()) > 0 && (await textbox.isVisible().catch(() => false));
+    const textbox = page.locator(
+      "div[role='textbox'][aria-label='Text editor for creating content']:visible",
+    ).first();
+    if ((await textbox.count().catch(() => 0)) > 0) {
+      return true;
+    }
+
+    const qlEditor = page.locator("div.ql-editor[contenteditable='true'][role='textbox']:visible").first();
+    return (await qlEditor.count().catch(() => 0)) > 0;
   }
 
   private async dismissDialog(page: Page): Promise<void> {

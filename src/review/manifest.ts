@@ -107,6 +107,29 @@ export class ReviewManifestBuilder {
               border-radius: 12px;
               border: 1px solid rgba(30, 36, 48, 0.12);
             }
+            .variant-actions {
+              display: flex;
+              gap: 8px;
+              margin-top: 10px;
+              flex-wrap: wrap;
+            }
+            .variant-actions a {
+              display: inline-block;
+              padding: 6px 10px;
+              border-radius: 999px;
+              background: #1f6feb;
+              color: white;
+              font-size: 0.85rem;
+              text-decoration: none;
+              font-weight: 500;
+            }
+            .variant-actions a.secondary {
+              background: #e7eef8;
+              color: #1e2430;
+            }
+            .variant-actions a:hover {
+              filter: brightness(1.05);
+            }
             .select-bar {
               position: sticky;
               top: 16px;
@@ -205,7 +228,14 @@ export class ReviewManifestBuilder {
               };
 
               document.querySelectorAll(".variant").forEach((element) => {
-                element.addEventListener("click", () => selectVariant(element));
+                element.addEventListener("click", (event) => {
+                  // Clicks on anchors (Open full image / Open folder / image link)
+                  // should open the link, not trigger variant selection + auto-open folder.
+                  if (event.target && event.target.closest && event.target.closest("a")) {
+                    return;
+                  }
+                  selectVariant(element);
+                });
               });
 
               if (copyButton) {
@@ -261,6 +291,9 @@ export class ReviewManifestBuilder {
       variant.metadataPath ? `<p><strong>Metadata:</strong> ${htmlEscape(variant.metadataPath)}</p>` : "",
     ].filter(Boolean).join("\n");
 
+    const fileUrl = htmlEscape(pathToFileURL(variant.filePath).toString());
+    const folderUrl = htmlEscape(pathToFileURL(`${path.dirname(variant.filePath)}${path.sep}`).toString());
+
     return `
       <div
         class="variant"
@@ -269,11 +302,17 @@ export class ReviewManifestBuilder {
         data-variant-id="${hasRealVariants ? htmlEscape(variant.id) : ""}"
         data-label="${htmlEscape(`${asset.toolName} - ${variant.label}`)}"
         data-file-path="${htmlEscape(variant.filePath)}"
-        data-folder-url="${htmlEscape(pathToFileURL(`${path.dirname(variant.filePath)}${path.sep}`).toString())}"
+        data-folder-url="${folderUrl}"
       >
         <h3>${htmlEscape(variant.label)}</h3>
         ${metadataBits}
-        <img src="${htmlEscape(pathToFileURL(variant.filePath).toString())}" alt="${htmlEscape(asset.toolName)} ${htmlEscape(variant.label)}" />
+        <a href="${fileUrl}" target="_blank" rel="noopener" class="variant-image-link" title="Open full image in new tab">
+          <img src="${fileUrl}" alt="${htmlEscape(asset.toolName)} ${htmlEscape(variant.label)}" />
+        </a>
+        <div class="variant-actions">
+          <a href="${fileUrl}" target="_blank" rel="noopener">Open full image</a>
+          <a href="${folderUrl}" target="_blank" rel="noopener" class="secondary">Open folder</a>
+        </div>
       </div>
     `;
   }

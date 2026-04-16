@@ -1,3 +1,6 @@
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -6,6 +9,15 @@ import { runPaths } from "../config/paths.js";
 import { imageToolConfigs, linkedInConfig } from "../config/tools.js";
 import { AuthService } from "../playwright/auth.js";
 import { allowedActionsForStage, extractReviewPagePath } from "./helpers.js";
+
+const toFileUrl = (p: string | undefined): string | undefined => {
+  if (!p) return undefined;
+  try {
+    return pathToFileURL(p).toString();
+  } catch {
+    return undefined;
+  }
+};
 
 const schema = z.object({
   run_id: z.string(),
@@ -49,6 +61,8 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
                 tool_name: asset.toolName,
                 status: asset.status,
                 file_path: asset.files[0],
+                file_url: toFileUrl(asset.files[0]),
+                display_name: asset.files[0] ? path.basename(asset.files[0]) : undefined,
                 notes: asset.notes,
               })),
               active_tool: run.activeToolName,
@@ -63,6 +77,7 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
         tool_name: asset.toolName,
         status: asset.status,
         file_path: asset.files[0],
+        display_name: asset.files[0] ? path.basename(asset.files[0]) : undefined,
         variant_id: asset.variants?.[0]?.id,
         notes: asset.notes,
       }));
@@ -109,18 +124,29 @@ export const registerGenerateImageCandidates = (server: McpServer): void => {
           idempotent: false,
           data: {
             candidates: run.stage === "awaiting_image_selection"
-              ? orchestrator.imageChoices(run).map((c) => ({
-                number: c.number,
-                tool_id: run.imageAssets.find((a) => a.id === c.assetId)?.toolId,
-                tool_name: run.imageAssets.find((a) => a.id === c.assetId)?.toolName,
-                status: run.imageAssets.find((a) => a.id === c.assetId)?.status,
-                file_path: c.filePath,
-                variant_id: c.variantId,
-                notes: run.imageAssets.find((a) => a.id === c.assetId)?.notes,
-              }))
+              ? orchestrator.imageChoices(run).map((c) => {
+                const asset = run.imageAssets.find((a) => a.id === c.assetId);
+                const variantLabel = c.variantId
+                  ? asset?.variants?.find((v) => v.id === c.variantId)?.label
+                  : undefined;
+                return {
+                  number: c.number,
+                  tool_id: asset?.toolId,
+                  tool_name: asset?.toolName,
+                  status: asset?.status,
+                  file_path: c.filePath,
+                  file_url: toFileUrl(c.filePath),
+                  display_name: c.displayName,
+                  variant_id: c.variantId,
+                  variant_label: variantLabel,
+                  notes: asset?.notes,
+                };
+              })
               : candidates,
             review_page_path: reviewPagePath,
+            review_page_url: toFileUrl(reviewPagePath),
             review_images_dir: paths.imageDir,
+            review_images_dir_url: toFileUrl(paths.imageDir),
             comparison_output_dir: paths.comparisonDir,
             auth_required: run.stage === "awaiting_auth" ? {
               tool_id: run.pendingAuth?.toolId,

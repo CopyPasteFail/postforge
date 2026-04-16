@@ -1,8 +1,19 @@
+import { pathToFileURL } from "node:url";
+
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { OrchestratorAgent } from "../orchestrator.js";
 import { allowedActionsForStage } from "./helpers.js";
+
+const toFileUrl = (p: string | undefined): string | undefined => {
+  if (!p) return undefined;
+  try {
+    return pathToFileURL(p).toString();
+  } catch {
+    return undefined;
+  }
+};
 
 const schema = z.object({
   run_id: z.string(),
@@ -27,15 +38,24 @@ export const registerFinalizeCandidates = (server: McpServer): void => {
             allowed_actions: allowedActionsForStage(run.stage),
             idempotent: false,
             data: {
-              candidates: choices.map((c) => ({
-                number: c.number,
-                tool_id: run.imageAssets.find((a) => a.id === c.assetId)?.toolId,
-                tool_name: run.imageAssets.find((a) => a.id === c.assetId)?.toolName,
-                status: run.imageAssets.find((a) => a.id === c.assetId)?.status,
-                file_path: c.filePath,
-                variant_id: c.variantId,
-                notes: run.imageAssets.find((a) => a.id === c.assetId)?.notes,
-              })),
+              candidates: choices.map((c) => {
+                const asset = run.imageAssets.find((a) => a.id === c.assetId);
+                const variantLabel = c.variantId
+                  ? asset?.variants?.find((v) => v.id === c.variantId)?.label
+                  : undefined;
+                return {
+                  number: c.number,
+                  tool_id: asset?.toolId,
+                  tool_name: asset?.toolName,
+                  status: asset?.status,
+                  file_path: c.filePath,
+                  file_url: toFileUrl(c.filePath),
+                  display_name: c.displayName,
+                  variant_id: c.variantId,
+                  variant_label: variantLabel,
+                  notes: asset?.notes,
+                };
+              }),
             },
           }) }],
         };
