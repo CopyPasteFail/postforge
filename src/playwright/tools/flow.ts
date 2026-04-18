@@ -72,9 +72,11 @@ class FlowToolAdapter extends GenericImageToolAdapter {
         await this.ensureAuthenticated(true);
         return this.downloadFromProjectUrl(runId, projectUrl, outputDir, downloadKind);
       }
+      await this.dismissOverlays(page);
 
       await page.goto(projectUrl, { waitUntil: "domcontentloaded" });
       await delay(5_000);
+      await this.dismissOverlays(page);
 
       const screenshotPath = path.join(outputDir, "flow-existing-project.png");
       await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => undefined);
