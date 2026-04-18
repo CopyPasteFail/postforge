@@ -52,7 +52,7 @@ export class OrchestratorAgent {
         postText: trimmedPost,
         copyBlock: `\`\`\`\n${trimmedPost}\n\`\`\``,
         followUpRevision: "Want to revise the draft? You can reply with one word like 'shorter', 'punchier', or 'clearer'.",
-        followUpImage: "Want to move on to image generation? Reply 'image' or choose a comic style: Rick and Morty, Dilbert, The Jetsons, The Simpsons, South Park, Garfield, Futurama, X-Men, Lego, The Adventures of Tintin, Asterix and Obelix. You can also name another satire comic.",
+        followUpImage: "Want to move on to image generation? Reply 'image' or choose a comic style: Rick and Morty, Dilbert, Cyanide & Happiness, The Jetsons, The Simpsons, South Park, Garfield, Futurama, X-Men, Lego, The Adventures of Tintin, Asterix and Obelix. You can also name another satire comic.",
         sourceLink: run.resolvedInput?.sourceLink ?? run.articleSource?.url,
       };
 

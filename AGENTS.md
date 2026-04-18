@@ -103,7 +103,7 @@ Terminal stages: `ready_to_post`, `failed`, `archived`.
 
 ## Versions
 
-- Server version: npm package version (1.1.3)
+- Server version: npm package version (1.1.5)
 - Tool contract version: 1
 - Run schema version: 1 (stored in every run.json)
 

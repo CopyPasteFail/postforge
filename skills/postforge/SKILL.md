@@ -191,7 +191,7 @@ If link is inaccessible, use the exact fallback line and stop. The `run_id` from
 
 **After any final or revised draft, always ask these two follow-ups exactly:**
 1. "Want to revise the draft? You can reply with one word like 'shorter', 'punchier', or 'clearer'."
-2. "Want to move on to image generation? Reply 'image' or choose a comic style: Rick and Morty, Dilbert, The Jetsons, The Simpsons, South Park, Garfield, Futurama, X-Men, The Adventures of Tintin. You can also name another satire comic."
+2. "Want to move on to image generation? Reply 'image' or choose a comic style: Rick and Morty, Dilbert, Cyanide & Happiness, The Jetsons, The Simpsons, South Park, Garfield, Futurama, X-Men, The Adventures of Tintin. You can also name another satire comic."
 
 **Revision Behavior:** Revise only the most recent draft. Do not regenerate hooks or variations. Preserve structure and intent. Output revised draft in a copyable block. Repeat the two follow-up questions.
 
